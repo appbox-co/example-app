@@ -28,9 +28,11 @@ Use this as a template and reference when creating your own Appbox app.
 - [Available Categories](#available-categories)
 - [Port Types Explained](#port-types-explained)
 - [Volume Bind Types](#volume-bind-types)
+- [Multi-Service Apps (s6-overlay)](#multi-service-apps-s6-overlay)
 - [Entrypoint Lifecycle](#entrypoint-lifecycle)
 - [API Callback](#api-callback)
 - [Password Change Script (moduser.sh)](#password-change-script-modusersh)
+- [Embedding Databases](#embedding-databases)
 - [Security Checklist](#security-checklist)
 - [Step-by-Step: Creating a New App](#step-by-step-creating-a-new-app)
 - [Submitting Your App](#submitting-your-app)
@@ -532,6 +534,90 @@ Always set `uid: 1000` in your volume definitions. The platform handles host-sid
 
 ---
 
+## Multi-Service Apps (s6-overlay)
+
+This example (Uptime Kuma) is a single-process app. For apps requiring multiple services in one container (e.g. web app + PostgreSQL + Redis), use s6-overlay as the process supervisor. If your base image is from LinuxServer.io (LSIO) or ImageGenius, s6-overlay is already included.
+
+### Architecture
+
+```
+entrypoint.sh (one-time setup)
+    └── exec /init (s6-overlay)
+            ├── init-adduser (oneshot)
+            ├── init-config-* (oneshot)
+            ├── svc-postgres (longrun)
+            ├── svc-redis (longrun)
+            ├── svc-server (longrun)
+            └── svc-microservices (longrun)
+```
+
+### Key differences from single-process apps
+
+| Aspect | Single-process | Multi-service (s6-overlay) |
+|--------|---------------|---------------------------|
+| CMD | `["node", "server.js"]` | `["/init"]` |
+| Process supervision | None (app is PID 1) | s6 supervises all services |
+| Crash recovery | Container restarts | s6 restarts the crashed service |
+| Graceful shutdown | Docker SIGTERM to PID 1 | s6 propagates SIGTERM to all services |
+| User switching | `exec gosu 1000:1000 "$@"` | Each service `run` script uses `gosu` or `s6-setuidgid` |
+| Callback timing | Before `exec` (synchronous) | Background subshell after `exec /init` (async) |
+
+### s6 service dependency ordering
+
+**Critical:** s6-rc starts services in parallel with init scripts unless you declare explicit dependencies. Without them, services start before init scripts create users, fix permissions, or set up directories.
+
+Add dependency files to each service's `dependencies.d/` directory in the Dockerfile:
+
+```dockerfile
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-myapp/dependencies.d && \
+    touch /etc/s6-overlay/s6-rc.d/svc-myapp/dependencies.d/legacy-cont-init && \
+    touch /etc/s6-overlay/s6-rc.d/svc-myapp/dependencies.d/init-config-myapp
+```
+
+To inspect the live dependency graph:
+```bash
+# List all services in the compiled database
+s6-rc-db -c /run/s6/db list all
+
+# Check what a service depends on
+s6-rc-db -c /run/s6/db dependencies svc-myapp
+```
+
+### Overriding LSIO init scripts
+
+LSIO init scripts may run expensive operations on every boot (e.g. recursively chowning thousands of immutable image-layer files). Override them by copying a replacement script:
+
+```dockerfile
+COPY init-config-myapp /etc/s6-overlay/s6-rc.d/init-config-myapp/run
+RUN chmod +x /etc/s6-overlay/s6-rc.d/init-config-myapp/run
+```
+
+### Entrypoint pattern for s6 apps
+
+The entrypoint performs one-time setup (database initialization, directory creation) then `exec "$@"` to hand off to `/init`. Since `/init` takes over as PID 1, the Appbox lifecycle (admin creation, callback) runs in a **background subshell**:
+
+```bash
+#!/bin/bash
+set -e
+
+# ... one-time setup (initdb, migrations, etc.) ...
+
+if [[ ! -f /etc/app_configured ]]; then
+    touch /etc/app_configured
+    (
+        set +e   # prevent set -e from killing subshell on timeout
+        wait_for_http "http://localhost:8080/api/health" 300 2
+        # ... admin creation, callback ...
+    ) &
+fi
+
+exec "$@"   # becomes: exec /init
+```
+
+**Warning:** `set -e` propagates into `( ... ) &` subshells. If `wait_for_http` times out (returns 1), `set -e` kills the subshell before `callback_installed` runs, leaving the app stuck in "installing" state forever. Always use `set +e` at the top of the subshell.
+
+---
+
 ## Entrypoint Lifecycle
 
 The entrypoint script detects three container states based on two signals:
@@ -730,6 +816,78 @@ See `moduser.sh` in this repository for a working example using Uptime Kuma's bu
 
 ---
 
+## Embedding Databases
+
+Some apps require a real database (PostgreSQL, MySQL, etc.) rather than SQLite. Since Appbox requires single-container deployment, you must embed the database inside the same container.
+
+### PostgreSQL
+
+When bundling PostgreSQL:
+
+1. **Install from the official repo** — Use the PGDG apt repository for the exact major version the app requires. The app's extensions (`.so` files) are compiled against a specific PG major version and won't work with a different one.
+
+2. **Initialize the data directory before services start** — Run `initdb` in the entrypoint (before `exec /init`), not in an s6 service. This ensures the data directory exists and is ready when the PostgreSQL service starts:
+   ```bash
+   PG_DATA="/config/postgres"
+   if [[ ! -f "${PG_DATA}/PG_VERSION" ]]; then
+       gosu 1000:1000 /usr/lib/postgresql/14/bin/initdb -D "${PG_DATA}"
+       # configure postgresql.conf, create database, etc.
+   fi
+   ```
+
+3. **UID must exist in `/etc/passwd`** — PostgreSQL's `initdb` calls `getpwuid()` and fails with "could not look up effective user ID" if the UID has no entry. When using LSIO base images, the `init-adduser` script creates the user, but the entrypoint runs *before* `/init`. Bootstrap the user:
+   ```bash
+   if ! getent passwd 1000 >/dev/null 2>&1; then
+       echo "appuser:x:1000:1000::/config:/usr/sbin/nologin" >> /etc/passwd
+   fi
+   if ! getent group 1000 >/dev/null 2>&1; then
+       echo "appuser:x:1000:" >> /etc/group
+   fi
+   ```
+
+4. **Data directory permissions** — PostgreSQL requires mode 700 on its data directory. LSIO init scripts may reset `/config` permissions to 755. Fix it in the s6 `run` script, immediately before starting PG:
+   ```bash
+   chmod 700 /config/postgres
+   exec gosu 1000:1000 /usr/lib/postgresql/14/bin/postgres -D /config/postgres
+   ```
+
+5. **Crash recovery (stale PID files)** — After an unclean shutdown, a stale `postmaster.pid` prevents PostgreSQL from starting. Clean it up:
+   ```bash
+   if [ -f /config/postgres/postmaster.pid ]; then
+       OLD_PID=$(head -1 /config/postgres/postmaster.pid)
+       if ! kill -0 "$OLD_PID" 2>/dev/null; then
+           pkill -9 -u 1000 postgres 2>/dev/null || true
+           sleep 1
+           rm -f /config/postgres/postmaster.pid
+       fi
+   fi
+   ```
+
+6. **Socket directory** — Create and chown `/var/run/postgresql` before starting PG (it's a tmpfs and may not exist):
+   ```bash
+   mkdir -p /var/run/postgresql && chown 1000:1000 /var/run/postgresql
+   ```
+
+7. **Extensions and `shared_preload_libraries`** — Some extensions (e.g. pgvecto.rs, pgvector) must be listed in `shared_preload_libraries` in `postgresql.conf` *before* PostgreSQL starts. Configure this during `initdb`, not after.
+
+### Redis
+
+Redis is straightforward to embed:
+- Install `redis-server`
+- Run it as an s6 longrun service: `exec gosu 1000:1000 redis-server --dir /config/redis`
+- Redis automatically creates its data files on first start
+
+### moduser.sh for embedded databases
+
+When the app has no CLI password-reset command, `moduser.sh` must update the database directly. Key considerations:
+
+- **Hash the password** using the app's expected algorithm (bcrypt, argon2, etc.). Install the hashing library during the Docker build.
+- **Module resolution** — Globally installed npm packages may not be found by Node.js at runtime. Set `NODE_PATH=/usr/lib/node_modules` explicitly.
+- **Schema knowledge** — You must know the exact table and column names. They may differ from what you'd expect (e.g. Immich uses a quoted `"user"` table, not `users`). Check the app's migration files or running database to confirm.
+- **Reserved SQL keywords** — Table names like `user` are reserved in PostgreSQL and must be double-quoted in SQL: `UPDATE "user" SET password = '...'`
+
+---
+
 ## Security Checklist
 
 When creating an Appbox app, ensure:
@@ -752,7 +910,7 @@ When creating an Appbox app, ensure:
 
 ## Step-by-Step: Creating a New App
 
-1. **Choose your base image** — Find an official Docker image for the app you want to package. Check Docker Hub or the app's GitHub for maintained images.
+1. **Choose your base image** — Find an official Docker image for the app you want to package. Check Docker Hub or the app's GitHub for maintained images. If the app needs multiple services, look for a monolithic image (e.g. LinuxServer.io, ImageGenius) that bundles everything with s6-overlay.
 
 2. **Create the repository** — Set up a new Git repo with these files:
    - `appbox.yml`
@@ -760,12 +918,14 @@ When creating an Appbox app, ensure:
    - `entrypoint.sh`
    - `moduser.sh`
    - `icon.png` (512x512)
+   - For multi-service apps: s6 service `run` scripts and any init script overrides
 
 3. **Write `appbox.yml`** — Start with the required sections (`app` and `image`), then add what your app needs. Copy from this example and modify. Key decisions:
    - What ports does the app listen on? → `ports` section
    - What data needs to persist? → `volumes` section
    - What does the user need to configure? → `custom_fields` section
    - Does the app need a domain? → `networking` section
+   - Does the app need a database? → embed it and add its data dir to `volumes`
 
 4. **Write the Dockerfile** — Follow this pattern:
    ```dockerfile
@@ -775,17 +935,19 @@ When creating an Appbox app, ensure:
    ADD moduser.sh /moduser.sh
    RUN chmod +x /moduser.sh
    ENTRYPOINT ["/entrypoint.sh"]
-   CMD [<app's default command>]
+   CMD [<app's default command>]       # or CMD ["/init"] for s6 apps
    EXPOSE <internal port>
    ```
+   For multi-service apps, also define s6 longrun services and explicit dependency ordering. See [Multi-Service Apps](#multi-service-apps-s6-overlay).
 
-5. **Write `moduser.sh`** — Password change script that accepts one argument (the new password) and overwrites the default user's password. See [Password Change Script](#password-change-script-modusersh).
+5. **Write `moduser.sh`** — Password change script that accepts one argument (the new password) and overwrites the default user's password. See [Password Change Script](#password-change-script-modusersh). For apps with embedded databases and no CLI reset command, see [Embedding Databases → moduser.sh](#modusersh-for-embedded-databases).
 
 6. **Write `entrypoint.sh`** — Follow the lifecycle pattern:
    - State detection (check for persisted data via `/etc/app_configured`)
    - Fresh install: start app, configure, stop app
    - API callback
    - `exec gosu 1000:1000 "$@"` (always UID 1000, never another UID)
+   - For s6 apps: one-time setup before `/init`, lifecycle in background subshell (with `set +e`), then `exec "$@"`
 
 7. **Test locally** — Build and run the container:
    ```bash

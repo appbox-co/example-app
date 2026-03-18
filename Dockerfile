@@ -14,10 +14,23 @@
 #
 # INIT SYSTEM NOTE:
 #   If your app needs multiple services (e.g. app + database + worker),
-#   you MUST use s6-overlay as the init/process supervisor. For single-process apps
-#   like this one, a plain bash entrypoint with exec is fine. When building
-#   on an existing upstream image, any init approach is acceptable — the
-#   priority is reusing well-maintained images over custom builds.
+#   you MUST use s6-overlay as the init/process supervisor. It handles
+#   process lifecycle, automatic restarts, and signal forwarding correctly.
+#   For single-process apps like this one, a plain bash entrypoint with
+#   exec is fine. When building on an existing upstream image, any init
+#   approach is acceptable — the priority is reusing well-maintained images
+#   over custom builds.
+#
+#   For multi-service apps using s6-overlay or LSIO base images:
+#     - Use CMD ["/init"] instead of CMD [<app command>]
+#     - The entrypoint handles one-time setup then exec's /init
+#     - Each service gets an s6 longrun definition with a run script
+#     - Service dependencies MUST be declared explicitly — s6-rc starts
+#       services in parallel with init scripts by default
+#     - The Appbox callback runs in a background subshell (since exec /init
+#       takes over the main process) — use set +e in the subshell to
+#       prevent set -e from killing it on wait_for_http timeout
+#
 #   Uptime Kuma uses Node.js directly, so we use a simple bash entrypoint
 #   with `exec` for proper PID 1 signal handling.
 #

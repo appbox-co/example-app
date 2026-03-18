@@ -153,11 +153,23 @@ Verify the app runs as the correct user and is PID 1.
 docker exec my-app-test ps aux
 ```
 
-**Checklist:**
+**Checklist (single-process apps):**
 
 - [ ] The main app process is running as UID 1000 (not root)
 - [ ] The main app process is PID 1 (proper signal handling via `exec`)
 - [ ] No orphan processes left behind from the entrypoint setup phase
+
+**Checklist (multi-service / s6-overlay apps):**
+
+- [ ] s6-svscan is PID 1 (this is correct — s6 is the init system)
+- [ ] All app services are running as UID 1000 (not root)
+- [ ] Each service is supervised by s6 (`s6-supervise` parent in process tree)
+- [ ] Database services are running and accepting connections
+
+```bash
+# For s6 apps, verify the full process tree:
+docker exec my-app-test ps ajxf
+```
 
 Check file ownership:
 
@@ -184,6 +196,15 @@ time docker stop my-app-test
 - [ ] Container stops within 10 seconds (Docker's default grace period)
 - [ ] No `killing` message in Docker logs (which means SIGTERM was ignored and Docker sent SIGKILL)
 - [ ] No data corruption after stop (verify by starting again)
+
+### Multi-service apps (s6-overlay)
+
+For apps using s6-overlay, also verify:
+
+- [ ] s6-overlay propagates SIGTERM to all supervised services
+- [ ] All services stop cleanly (check `docker logs` for each service's shutdown messages)
+- [ ] Database shutdown is clean (e.g. PostgreSQL: "database system is shut down")
+- [ ] No stale PID files left behind after stop
 
 ---
 
@@ -254,7 +275,34 @@ docker run -d --name my-app-test2 \
 
 ---
 
-## 10. Password Change Script (moduser.sh)
+## 10. Service Crash Recovery (multi-service apps only)
+
+For apps using s6-overlay, verify that crashed services are automatically restarted.
+
+```bash
+# Find the PID of a supervised service (e.g. postgres)
+docker exec my-app-test pgrep -f postgres
+
+# Kill it (simulating a crash)
+docker exec my-app-test kill <pid>
+
+# Wait a moment, then verify s6 restarted it
+sleep 3
+docker exec my-app-test pgrep -f postgres
+```
+
+**Checklist:**
+
+- [ ] Killing a supervised service does NOT kill the container
+- [ ] s6 restarts the crashed service automatically within seconds
+- [ ] The service recovers to a working state after restart
+- [ ] Other services continue running during the crash/restart
+- [ ] Database services handle crash recovery correctly (stale PID cleanup, WAL recovery)
+- [ ] Killing and restarting a database service does not corrupt data
+
+---
+
+## 11. Password Change Script (moduser.sh)
 
 All apps must include `/moduser.sh` for password recovery. Run these tests against a container that has completed fresh install.
 
@@ -288,7 +336,7 @@ docker exec my-app /moduser.sh
 
 ---
 
-## 11. appbox.yml Validation
+## 12. appbox.yml Validation
 
 **Checklist:**
 
@@ -307,7 +355,7 @@ docker exec my-app /moduser.sh
 
 ---
 
-## 12. Documentation
+## 13. Documentation
 
 **Checklist:**
 
@@ -372,7 +420,13 @@ When submitting your app, include a summary of test results in your ticket notes
 1. Fresh install works and admin user is created
 2. Restart preserves state and skips setup
 3. Upgrade preserves data and skips user creation
-4. App runs as UID 1000 and is PID 1
+4. App runs as UID 1000 and is PID 1 (or supervised by s6 as UID 1000 for multi-service apps)
 5. Graceful shutdown completes within 10 seconds
 6. `/moduser.sh` changes the password successfully
 7. All `appbox.yml` fields are valid
+
+For multi-service apps, additionally confirm:
+
+8. All services supervised by s6 and restart on crash
+9. s6 dependency ordering is correct (services don't start before init scripts complete)
+10. Database crash recovery works (stale PID cleanup, WAL replay)
