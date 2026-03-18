@@ -46,7 +46,7 @@ When creating or modifying an Appbox app, always follow these rules:
 
 6. **Volume UID** — Set `uid: 1000` in all volume definitions in `appbox.yml`.
 
-7. **Prefer upstream images** — Build on official, well-maintained Docker images rather than building from scratch. Preferred init system is s6-overlay, but any is fine when reusing upstream images.
+7. **Prefer upstream images** — Build on official, well-maintained Docker images rather than building from scratch. If the app needs multiple services running in a single container (e.g. app + database + worker), you MUST use **s6-overlay** as the init/process supervisor — it handles process lifecycle, restarts, and signal forwarding correctly. For single-process apps, a plain bash entrypoint with `exec` is fine. Any init system is acceptable when reusing upstream images.
 
 8. **moduser.sh** — All apps MUST include `/moduser.sh` in the container. It accepts one argument (`new_password`) and overwrites the default user's password. This is used for account recovery when a user is locked out.
 

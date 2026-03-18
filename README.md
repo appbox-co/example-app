@@ -41,7 +41,7 @@ Use this as a template and reference when creating your own Appbox app.
 
 1. **Single container** — Apps must be fully self-contained in one Docker container with no external dependencies. No separate database containers, no docker-compose, no sidecar services. If the app needs a database, it must be embedded (e.g. SQLite) or bundled inside the same container.
 
-2. **Init system** — The preferred init system is **s6-overlay**. However, when building on an existing upstream image (as this example does with Uptime Kuma), any init approach is acceptable. The priority is reusing well-maintained official images over custom builds. Other common patterns include phusion baseimage (`/sbin/my_init`) or a plain bash entrypoint with `exec`.
+2. **Init system** — If your app needs multiple services running in a single container (e.g. app server + database + background worker), you MUST use **s6-overlay** as the init/process supervisor. It handles process lifecycle, restarts, and signal forwarding correctly for multi-service containers. For single-process apps, a plain bash entrypoint with `exec` is sufficient. When building on an existing upstream image (as this example does with Uptime Kuma), any init approach is acceptable — the priority is reusing well-maintained official images over custom builds.
 
 3. **Entrypoint** — Regardless of init system, the app must follow the Appbox entrypoint lifecycle: first-run setup, upgrade detection, platform callback, then exec the main process. See [Entrypoint Lifecycle](#entrypoint-lifecycle).
 

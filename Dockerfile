@@ -13,9 +13,11 @@
 #     - Less custom code to maintain
 #
 # INIT SYSTEM NOTE:
-#   Appbox's preferred init system is s6-overlay. However, when building on
-#   an existing upstream image (as we do here), any init approach is fine.
-#   The priority is reusing well-maintained images over custom builds.
+#   If your app needs multiple services (e.g. app + database + worker),
+#   you MUST use s6-overlay as the init/process supervisor. For single-process apps
+#   like this one, a plain bash entrypoint with exec is fine. When building
+#   on an existing upstream image, any init approach is acceptable — the
+#   priority is reusing well-maintained images over custom builds.
 #   Uptime Kuma uses Node.js directly, so we use a simple bash entrypoint
 #   with `exec` for proper PID 1 signal handling.
 #
