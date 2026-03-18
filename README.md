@@ -119,9 +119,9 @@ Docker container settings. All optional. Maps to `apps` table.
 | `cmd` | string | `null` | Override container CMD |
 | `user` | string | `null` | Container user (e.g. `"1000"`, `"user:group"`) |
 | `group_add` | string | `null` | Additional groups, comma-separated |
-| `memory` | integer | `0` | Memory limit in MB (0 = unlimited) |
-| `memory_swap` | integer | `0` | Memory + swap limit in MB |
-| `memory_reservation` | integer | `0` | Soft memory limit in MB |
+| `memory` | integer | `0` | Memory limit in GB (0 = unlimited) |
+| `memory_swap` | integer | `0` | Memory + swap limit in GB |
+| `memory_reservation` | integer | `0` | Soft memory limit in GB |
 | `cpus` | float | `0` | CPU limit (0 = unlimited, 0.5 = half core) |
 | `init` | boolean | `false` | Use tini init process |
 | `cap_add` | string | `null` | Linux capabilities to add (e.g. `"NET_ADMIN,SYS_PTRACE"`) |
@@ -169,12 +169,14 @@ Text shown during installation. Maps to `apps` table.
 
 ### ports — Port Configuration
 
-Defines port mappings. See [Port Types Explained](#port-types-explained) for details.
+Defines ports to be **publicly exposed** on the host. See [Port Types Explained](#port-types-explained) for details.
+
+> **Web apps**: If your app is a web app (`is_web_app: true`) and only exposes a web UI, you do **not** need any ports here. The platform reverse-proxies HTTP traffic via nginx automatically. Instead, set `VIRTUAL_PORT` in the `env` section to the HTTP port your app listens on (default: 80). Only define ports here for non-HTTP traffic (game servers, custom protocols, etc.). Defining your HTTP port here would expose it publicly, bypassing the reverse proxy and SSL.
 
 ```yaml
 ports:
   tcp:
-    range: "3001"       # Fixed internal port(s), random external
+    range: null         # Fixed internal port(s), random external
     dynamic: 0          # Count of random ports (internal = external)
   udp:
     range: null
@@ -210,6 +212,8 @@ Variables injected into the container. Maps to `appenvironmentvars` table.
 | `template_type` | string | Yes | How to resolve the value: `none`, `password`, `complexPassword`, `hidden`, `instance` |
 
 The platform also auto-injects: `INSTANCE_ID`, `VIRTUAL_HOST`, `CALLBACK_TOKEN`.
+
+> **`VIRTUAL_PORT`**: Required for web apps (`is_web_app: true`) not listening on port 80. Set this to the HTTP port your app listens on inside the container. The platform's nginx reverse proxy uses it to route traffic. Must be plain HTTP — the platform handles SSL termination. If your app listens on port 80, this is not needed.
 
 ### custom_fields — User Input
 
@@ -433,6 +437,8 @@ If none of these fit your app, you can suggest a new category in your submission
 
 ## Port Types Explained
 
+> **Reminder**: Web-only apps do not need ports defined here — use `VIRTUAL_PORT` in the `env` section instead. The `ports` section is for publicly exposed non-HTTP traffic.
+
 The platform supports four port allocation patterns:
 
 ### 1. Fixed internal, random external (most common)
@@ -440,13 +446,13 @@ The platform supports four port allocation patterns:
 Your app listens on a known port. The platform assigns a random available host port.
 
 ```
-Container port 3001 ←→ Host port 14523 (randomly assigned)
+Container port 25575 ←→ Host port 14523 (randomly assigned)
 ```
 
 ```yaml
 ports:
   tcp:
-    range: "3001"
+    range: "25575"
 ```
 
 The user accesses the app via the external port. Use `%PORTS|0.EXTERNAL%` in env vars to pass the external port to the app if needed.
@@ -509,7 +515,7 @@ The `range` field accepts:
 
 | Format | Example | Ports |
 |--------|---------|-------|
-| Single port | `"3001"` | 3001 |
+| Single port | `"25575"` | 25575 |
 | Range | `"8080-8090"` | 8080, 8081, ..., 8090 |
 | Multiple | `"80,443"` | 80, 443 |
 | Mixed | `"80,443,8080-8090"` | 80, 443, 8080–8090 |
@@ -631,43 +637,29 @@ Authorization: Bearer ${CALLBACK_TOKEN}
 - The callback is idempotent (safe to call multiple times)
 - Without the callback, the user sees the app as "installing" indefinitely
 
-### Callback with Custom Fields
+### externalURL Fields
 
-The callback can also set values for `externalURL` custom fields. This lets the container pass back values generated during install — such as passwords, tokens, or URLs — to be displayed to the user on the installed app page.
+Fields of type `externalURL` render as clickable links on the installed app page. There are two approaches:
 
-**Payload:**
+#### Approach 1: Template variable (preferred for predictable URLs)
 
-```json
-{
-  "custom_fields": [
-    { "key": "ADMIN_PANEL", "value": "https://example.com:8443/admin" },
-    { "key": "API_ENDPOINT", "value": "https://example.com:9090/api" }
-  ]
-}
+If the URL follows a known pattern (e.g. `https://<domain>/`), use a template variable in `default_value`. The platform resolves it at install time — no callback payload needed.
+
+```yaml
+custom_fields:
+  LOGIN_URL:
+    label: "Login URL"
+    type: externalURL
+    width: 12
+    default_value: "https://%DOMAIN.DOMAIN%/"
+    template_type: instance
+    validate: []
+    params: {}
 ```
 
-- `key` must match the custom field name defined in `appbox.yml` (e.g. `API_TOKEN`)
-- Only fields with type `externalURL` can be set this way — all other types are ignored
-- If the field already has a value (e.g. from a previous install), it is updated
-- Values are displayed to the user as read-only clickable links on the installed app page
-- If you need to update other custom field types via callback, please contact us via [support ticket](https://billing.appbox.co/submitticket.php?step=2&deptid=1)
+#### Approach 2: Set via callback (for runtime-dependent URLs)
 
-**Example in entrypoint.sh:**
-
-```bash
-ADMIN_URL="https://${DOMAIN}:${ADMIN_PORT}/admin"
-
-curl -s -o /dev/null -w "%{http_code}" \
-  -X POST "https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -d "{\"custom_fields\": [{\"key\": \"ADMIN_PANEL\", \"value\": \"${ADMIN_URL}\"}]}"
-```
-
-**Use cases:**
-- A management URL that includes a dynamic port or path only known after the app starts
-- An API endpoint URL generated during configuration
-- Any clickable link the user needs after installation
+If the URL depends on values only known after the app starts (dynamic ports, generated paths), set it via the API callback.
 
 **Defining the field in appbox.yml:**
 
@@ -682,6 +674,24 @@ custom_fields:
     validate: []
     params: {}
 ```
+
+**Setting the value in entrypoint.sh:**
+
+```bash
+ADMIN_URL="https://${DOMAIN}:${ADMIN_PORT}/admin"
+
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST "https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d "{\"custom_fields\": [{\"key\": \"ADMIN_PANEL\", \"value\": \"${ADMIN_URL}\"}]}"
+```
+
+**Rules:**
+- `key` must match the custom field name defined in `appbox.yml`
+- Only fields with type `externalURL` can be set this way — all other types are ignored
+- If the field already has a value (e.g. from a previous install), it is updated
+- If you need to update other custom field types via callback, please contact us via [support ticket](https://billing.appbox.co/submitticket.php?step=2&deptid=1)
 
 ---
 
@@ -716,7 +726,7 @@ docker exec <container_name> /moduser.sh "new-password"
 | Direct database update | App uses SQLite/embedded DB with a known schema |
 | Config file rewrite | App reads credentials from a config file |
 
-See `moduser.sh` in this repository for a working example using Uptime Kuma's SQLite database and bcrypt hashing.
+See `moduser.sh` in this repository for a working example using Uptime Kuma's built-in `npm run reset-password` CLI.
 
 ---
 
@@ -769,7 +779,7 @@ When creating an Appbox app, ensure:
    EXPOSE <internal port>
    ```
 
-5. **Write `moduser.sh`** — Password change script that accepts two arguments (current password, new password) and updates the default user's password. See [Password Change Script](#password-change-script-modusersh).
+5. **Write `moduser.sh`** — Password change script that accepts one argument (the new password) and overwrites the default user's password. See [Password Change Script](#password-change-script-modusersh).
 
 6. **Write `entrypoint.sh`** — Follow the lifecycle pattern:
    - State detection (check for persisted data via `/etc/app_configured`)
@@ -780,7 +790,9 @@ When creating an Appbox app, ensure:
 7. **Test locally** — Build and run the container:
    ```bash
    docker build -t my-app .
-   docker run -e USERNAME=admin -e PASSWORD=TestPass123! -e INSTANCE_ID=test -p 3001:3001 my-app
+   docker run -e USERNAME=admin -e PASSWORD='TestPass123!' \
+     -e INSTANCE_ID=test -e SKIP_APPBOX_CALLBACK=1 \
+     -p 3001:3001 my-app
    ```
 
 8. **Test the three states**:

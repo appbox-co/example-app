@@ -37,13 +37,13 @@
 # =============================================================================
 
 # BASE IMAGE
-# We use the official Uptime Kuma image from Docker Hub. The `:1` tag tracks
-# the latest 1.x release, giving us patch updates automatically while
+# We use the official Uptime Kuma image from Docker Hub. The `:2` tag tracks
+# the latest 2.x release, giving us patch updates automatically while
 # avoiding breaking major version changes.
 #
 # When using the Appbox private registry (repo.cylo.io), the image is pulled
 # from there instead. The `image.registry` field in appbox.yml controls this.
-FROM louislam/uptime-kuma:1
+FROM louislam/uptime-kuma:2
 
 # INSTALL REQUIRED TOOLS
 # These packages are needed by the entrypoint script:
@@ -62,14 +62,12 @@ FROM louislam/uptime-kuma:1
 #           `su` or `sudo`, gosu properly execs (replaces the process) so
 #           the app becomes PID 1 and receives signals correctly.
 #
-# The `--no-cache` flag avoids storing the package index in the image layer,
-# keeping the image smaller.
-#
-# NOTE: Uptime Kuma's base image is Node.js on Alpine Linux, so we use `apk`.
-# For Debian/Ubuntu-based images, use `apt-get install -y` instead.
+# NOTE: Uptime Kuma v2 is based on Debian, so we use `apt-get`.
+# For Alpine-based images, use `apk add --no-cache` instead.
 # For images without a package manager, install tools in a multi-stage build.
-RUN apk add --no-cache bash curl && \
-    apk add gosu --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends bash curl gosu && \
+    rm -rf /var/lib/apt/lists/*
 
 # ADD ENTRYPOINT SCRIPT
 # Copy our custom entrypoint into the container. This script handles:
@@ -104,13 +102,9 @@ CMD ["node", "server/server.js"]
 
 # EXPOSE
 # Documents which port the app listens on inside the container. This does
-# NOT publish the port to the host — that is handled by the platform based
-# on the `ports` section in appbox.yml.
+# NOT publish the port to the host — that is handled by the platform.
 #
-# The port here (3001) should match what's configured in appbox.yml:
-#   ports.tcp.range: "3001"
-#
-# The platform assigns a random available external (host) port and maps
-# it to this internal port. The external port is accessible via the
-# template variable %PORTS|0.external%.
+# For web apps, the platform reads this to know which port the container
+# uses, and reverse-proxies HTTP traffic via nginx. The VIRTUAL_PORT env
+# var in appbox.yml should match this value.
 EXPOSE 3001

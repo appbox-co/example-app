@@ -60,18 +60,34 @@ app:
   # Full description shown on the app detail page. Supports Markdown.
   # This should explain what the app does, key features, and any
   # important information users should know before installing.
+  #
+  # Submissions should follow this template as closely as possible:
+  #
+  #   1. Opening paragraph — one or two sentences explaining what the app
+  #      is and what it does. Keep it concise and factual.
+  #   2. ## Features — bullet list of the app's key capabilities.
+  #   3. ## Ideal For — bullet list of target use cases or audiences.
+  #   4. ## Good to Know (optional) — caveats, licensing notes, or anything
+  #      users should be aware of before installing.
+  #
   # Maps to: apps.description (text)
   description: |
-    Uptime Kuma is a self-hosted monitoring tool, similar to Uptime Robot.
+    Uptime Kuma is a self-hosted monitoring tool similar to Uptime Robot. It provides a modern dashboard for tracking the availability of your services with rich notification support.
 
-    **Features:**
+    ## Features
+
     - Monitor uptime for HTTP(s), TCP, HTTP(s) Keyword, Ping, DNS, and more
     - Notifications via Telegram, Discord, Gotify, Slack, Pushover, Email, and 90+ services
-    - Fancy, reactive, fast UI/UX
+    - Fast, reactive UI with real-time status updates
     - Multi-language support
-    - Status pages with custom domains
-    - Proxy support
-    - Certificate info for HTTPS monitors
+    - Status pages with custom domain support
+    - Proxy and certificate monitoring for HTTPS endpoints
+
+    ## Ideal For
+
+    - Monitoring personal or team infrastructure without a third-party service
+    - Self-hosters who want a lightweight, all-in-one uptime dashboard
+    - Users who need flexible alerting across many notification channels
 
   # short_description
   # A brief one-line summary shown on app store cards.
@@ -135,14 +151,14 @@ image:
   # The version string for this release, shown to users in the app store
   # and dashboard. This creates an entry in the `app_versions` table.
   # Maps to: app_versions.version (varchar)
-  version: "1"
+  version: "2"
 
   # tag
   # The Docker image tag to pull. Defaults to the value of `version` if
   # omitted. Useful when your version string differs from the Docker tag
   # (e.g. version "1.0.0" might use tag "v1.0.0" or "latest").
   # Maps to: app_versions.tag (varchar)
-  tag: "latest"
+  tag: "2"
 
 
 # =============================================================================
@@ -178,25 +194,25 @@ container:
   group_add: null
 
   # memory
-  # Hard memory limit in megabytes. The container is killed (OOM) if it
+  # Hard memory limit in gigabytes. The container is killed (OOM) if it
   # exceeds this. Set to 0 for unlimited. Choose based on your app's
   # typical usage — too low causes crashes, too high wastes resources.
-  # Maps to: apps.Memory (integer, bytes internally)
+  # Maps to: apps.Memory (integer, GB)
   # Default: 0 (unlimited)
-  memory: 256
+  memory: 1
 
   # memory_swap
-  # Total memory + swap limit in megabytes. Must be >= memory.
+  # Total memory + swap limit in gigabytes. Must be >= memory.
   # Set to 0 for unlimited swap. Set equal to `memory` to disable swap.
-  # Maps to: apps.MemorySwap (integer)
+  # Maps to: apps.MemorySwap (integer, GB)
   # Default: 0 (unlimited)
   memory_swap: 0
 
   # memory_reservation
-  # Soft memory limit in megabytes. The kernel reclaims memory from the
+  # Soft memory limit in gigabytes. The kernel reclaims memory from the
   # container when the host is under memory pressure, down to this limit.
   # Should be lower than `memory`.
-  # Maps to: apps.MemoryReservation (integer)
+  # Maps to: apps.MemoryReservation (integer, GB)
   # Default: 0 (no reservation)
   memory_reservation: 0
 
@@ -328,10 +344,13 @@ behavior:
   app_slots: 1
 
   # expect_callback
-  # Whether the platform should wait for an API callback from the container
-  # before marking the installation as complete. When true, the entrypoint
-  # script MUST call the callback URL (see entrypoint.sh for details).
-  # This allows the app to finish first-run setup before the user accesses it.
+  # Whether the container will call back to the platform API when installation
+  # is complete. When true, the entrypoint script MUST call the callback URL
+  # (see entrypoint.sh for details) and the platform will wait for this before
+  # marking the installation as complete. When false, the platform marks the
+  # install as complete immediately after starting the container.
+  # Set to true for apps that need first-run setup time before the user
+  # accesses them (e.g. database migrations, initial config).
   # Maps to: apps.expect_callback (integer, 0/1)
   # Default: false
   expect_callback: true
@@ -422,8 +441,25 @@ install:
 # =============================================================================
 # Section 7: ports — Port Configuration
 # =============================================================================
-# Defines which ports the container needs. The platform allocates external
-# (host) ports and maps them to the container's internal ports.
+# Defines which ports the container needs to be publicly exposed. The platform
+# allocates external (host) ports and maps them to the container's internal
+# ports.
+#
+# IMPORTANT — WEB APPS:
+#   If your app is a web app (is_web_app: true) and ONLY exposes a web UI,
+#   you do NOT need any ports defined here. The platform reverse-proxies
+#   HTTP traffic to your container automatically via nginx.
+#
+#   Instead, set the VIRTUAL_PORT environment variable (in the env section)
+#   to the HTTP port your app listens on inside the container. If your app
+#   listens on port 80, VIRTUAL_PORT is not needed (it's the default).
+#   VIRTUAL_PORT must ALWAYS be an HTTP (not HTTPS) port — the platform
+#   handles SSL termination.
+#
+#   Only define ports here if your app needs publicly reachable non-HTTP
+#   ports (e.g. a game server, SFTP, or API on a custom protocol).
+#   Defining your HTTP port here would expose it publicly, bypassing the
+#   reverse proxy and SSL — which is almost never what you want.
 #
 # There are two types of port allocation:
 #
@@ -459,11 +495,13 @@ install:
 #
 ports:
 
+  # Uptime Kuma is a web-only app, so no ports need to be publicly exposed.
+  # The platform reverse-proxies HTTP traffic to VIRTUAL_PORT (3001) via nginx.
+
   tcp:
     # range — Fixed internal TCP port(s), mapped to random external port(s).
-    # This is the most common type. Uptime Kuma listens on port 3001.
     # Maps to: apps.TCPPortRange (varchar)
-    range: "3001"
+    range: null
 
     # dynamic — Number of random TCP ports to allocate (internal = external).
     # Set to 0 if not needed. Example: a media server needing 5 random ports
@@ -492,51 +530,40 @@ ports:
     # Maps to: apps.CombinedDynamicPorts (integer)
     dynamic: 0
 
-# PORT TYPE EXAMPLES (not used by Uptime Kuma, shown for reference):
+# PORT EXAMPLES (not used by Uptime Kuma, shown for reference):
 #
-# Example 1: Single fixed TCP port (most web apps)
-#   ports:
-#     tcp:
-#       range: "8080"
-#       dynamic: 0
-#
-# Example 2: Multiple fixed TCP ports (app with HTTP + HTTPS)
-#   ports:
-#     tcp:
-#       range: "80,443"
-#       dynamic: 0
-#
-# Example 3: TCP port range (streaming server needing ports 8000–8010)
-#   ports:
-#     tcp:
-#       range: "8000-8010"
-#       dynamic: 0
-#
-# Example 4: Dynamic TCP ports (app needing 3 random ports)
-#   ports:
-#     tcp:
-#       range: null
-#       dynamic: 3
-#
-# Example 5: Combined fixed port (same port for TCP + UDP)
-#   ports:
-#     combined:
-#       range: "5060"
-#       dynamic: 0
-#
-# Example 6: Mixed (fixed web port + dynamic pool)
-#   ports:
-#     tcp:
-#       range: "8080"
-#       dynamic: 5
-#
-# Example 7: Game server (TCP for RCON, UDP for game traffic)
+# Example 1: Game server with RCON (TCP) + game traffic (UDP)
 #   ports:
 #     tcp:
 #       range: "25575"
 #       dynamic: 0
 #     udp:
 #       range: "27015"
+#       dynamic: 0
+#
+# Example 2: TCP port range (streaming server needing ports 8000–8010)
+#   ports:
+#     tcp:
+#       range: "8000-8010"
+#       dynamic: 0
+#
+# Example 3: Dynamic TCP ports (app needing 3 random ports)
+#   ports:
+#     tcp:
+#       range: null
+#       dynamic: 3
+#
+# Example 4: Combined fixed port (same port for TCP + UDP, e.g. SIP)
+#   ports:
+#     combined:
+#       range: "5060"
+#       dynamic: 0
+#
+# Example 5: Web app that ALSO exposes a non-HTTP API port
+#   # VIRTUAL_PORT handles HTTP via nginx. The API port is exposed publicly.
+#   ports:
+#     tcp:
+#       range: "9090"
 #       dynamic: 0
 
 
@@ -617,9 +644,23 @@ volumes:
 # Plus any custom field values are also injected as env vars, using the
 # field's `fname` (key name) as the variable name.
 #
+# VIRTUAL_PORT (web apps):
+#   If your app is a web app (is_web_app: true) and it listens on a port
+#   other than 80, you MUST define a VIRTUAL_PORT env var set to the HTTP
+#   port your app listens on. The platform's nginx reverse proxy reads this
+#   to know where to forward traffic. This must be the plain HTTP port —
+#   never HTTPS, as the platform handles SSL termination.
+#   If your app listens on port 80, VIRTUAL_PORT is not needed (default).
+#
 # Maps to: appenvironmentvars table (app_id, Key, Value, template_type, version)
 #
 env:
+
+  # VIRTUAL_PORT — Required for web apps not listening on port 80.
+  # Tells the platform's reverse proxy which port to forward HTTP traffic to.
+  - key: VIRTUAL_PORT
+    value: "3001"
+    template_type: none
 
   - # key — The environment variable name
     # Maps to: appenvironmentvars.Key (varchar)
@@ -773,6 +814,18 @@ custom_fields:
       - complexPassword
     params: {}
 
+  # externalURL field with a template variable — the platform resolves
+  # %DOMAIN.DOMAIN% at install time, so no callback payload is needed.
+  # This is the simplest way to give users a clickable link to the app.
+  LOGIN_URL:
+    label: "Login URL"
+    type: externalURL
+    width: 12
+    default_value: "https://%DOMAIN.DOMAIN%/"
+    template_type: instance
+    validate: []
+    params: {}
+
 # CUSTOM FIELD EXAMPLES (not used by Uptime Kuma, shown for reference):
 #
 # Example: Auto-generated hidden password (user never sees it)
@@ -850,7 +903,20 @@ custom_fields:
 #       regex: "^[a-z0-9-]+$"
 #       errorText: "Only lowercase letters, numbers, and hyphens allowed"
 #
-# Example: externalURL — clickable link set by the container during install
+# Example: externalURL with template variable (preferred when the URL is predictable)
+#   LOGIN_URL:
+#     label: "Login URL"
+#     type: externalURL
+#     width: 12
+#     default_value: "https://%DOMAIN.DOMAIN%/"
+#     template_type: instance
+#     validate: []
+#     params: {}
+#
+#   The platform resolves %DOMAIN.DOMAIN% at install time. No callback
+#   payload needed. Use this approach for standard web app URLs.
+#
+# Example: externalURL set dynamically via callback (for URLs only known at runtime)
 #   ADMIN_PANEL:
 #     label: "Admin Panel"
 #     type: externalURL
@@ -860,16 +926,15 @@ custom_fields:
 #     validate: []
 #     params: {}
 #
-#   The entrypoint can set this value during the API callback:
+#   The entrypoint sets this value during the API callback:
 #
 #     ADMIN_URL="https://${DOMAIN}:${ADMIN_PORT}/admin"
 #     curl -X POST "https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}" \
 #       -H "Content-Type: application/json" \
 #       -d "{\"custom_fields\": [{\"key\": \"ADMIN_PANEL\", \"value\": \"${ADMIN_URL}\"}]}"
 #
-#   The value is displayed to the user as a clickable link on the installed
-#   app page. Only externalURL fields can be set via callback. If you need
-#   to update other field types via callback, contact support:
+#   Only externalURL fields can be set via callback. If you need to update
+#   other field types via callback, contact support:
 #   https://billing.appbox.co/submitticket.php?step=2&deptid=1
 
 
