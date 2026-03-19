@@ -129,6 +129,12 @@ app:
   # Maps to: apps.source_repo (varchar)
   source_repo: "https://github.com/louislam/uptime-kuma"
 
+  # documentation_url
+  # Optional link to internal Appbox docs (or external docs) shown on app details.
+  # Use a docs route like "/docs/apps/my-app-setup" when available.
+  # Maps to: apps.documentation_url (text)
+  documentation_url: "/docs/apps/uptime-kuma-setup"
+
 
 # =============================================================================
 # Section 2: image — Docker Image
