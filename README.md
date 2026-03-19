@@ -19,6 +19,7 @@ Use this as a template and reference when creating your own Appbox app.
   - [install — Install Descriptions](#install--install-descriptions)
   - [ports — Port Configuration](#ports--port-configuration)
   - [volumes — Persistent Bind Mounts](#volumes--persistent-bind-mounts)
+  - [shared_data — Shared File System Access](#shared_data--shared-file-system-access)
   - [env — Environment Variables](#env--environment-variables)
   - [custom_fields — User Input](#custom_fields--user-input)
   - [advanced — Advanced Settings](#advanced--advanced-settings)
@@ -28,6 +29,7 @@ Use this as a template and reference when creating your own Appbox app.
 - [Available Categories](#available-categories)
 - [Port Types Explained](#port-types-explained)
 - [Volume Bind Types](#volume-bind-types)
+- [Shared File System](#shared-file-system)
 - [Multi-Service Apps (s6-overlay)](#multi-service-apps-s6-overlay)
 - [Entrypoint Lifecycle](#entrypoint-lifecycle)
 - [API Callback](#api-callback)
@@ -202,6 +204,25 @@ Directories persisted across restarts and upgrades. Maps to `appbinds` table.
 | `uid` | integer | Yes | Owner UID inside the container. Always `1000` (see note below) |
 
 > **UID explained**: The `uid` field should always be `1000`, matching the UID your app runs as inside the container. The platform handles host-side UID remapping via user namespaces automatically — you do not need to worry about host UIDs.
+
+### shared_data — Shared File System Access
+
+Mounts the user's shared home directory into the container so the app can access data from other installed apps. Maps to `appbinds` table. See [Shared File System](#shared-file-system) for full details.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | string | Yes | Absolute host path using template variables (e.g. `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/`) |
+| `destination` | string | Yes | Mount point inside the container (e.g. `/APPBOX_DATA`) |
+| `permissions` | string | Yes | `rw` (read-write) or `ro` (read-only) |
+| `uid` | integer | Yes | Owner UID inside the container. Always `1000` |
+
+```yaml
+shared_data:
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+    destination: "/APPBOX_DATA"
+    permissions: "rw"
+    uid: 1000
+```
 
 ### env — Environment Variables
 
@@ -531,6 +552,88 @@ All volume bind mounts store data under the user's app directory at `/apps/<app-
 **File ownership inside the container**: All data directories must be owned by UID 1000:GID 1000 inside the container. If the upstream image creates data directories owned by a different user, add a `chown -R 1000:1000 /path` step in your Dockerfile or entrypoint.
 
 Always set `uid: 1000` in your volume definitions. The platform handles host-side UID remapping via user namespaces automatically.
+
+### Shared storage
+
+Volumes defined in `appbox.yml` are stored in the **shared** home area:
+
+```
+/cylostore/<disk>/<cylo_id>/home/apps/<app-domain>/<source>/
+```
+
+This means other apps on the same account **can** access your app's data if they have the shared file system mounted (see [Shared File System](#shared-file-system) below). This is by design — it enables cross-app workflows like torrent clients sharing downloads with media players.
+
+---
+
+## Shared File System
+
+Apps on the Appbox platform can access each other's data through a shared file system. This enables powerful cross-app workflows — for example, a torrent client downloads files that a media player (Plex, Jellyfin) can immediately access, or an FTP server exposes all app data for remote access.
+
+### How it works
+
+Every app's `volumes` (the `home` storage) are stored on the host at:
+
+```
+/cylostore/<disk>/<cylo_id>/home/apps/
+├── plex.user-domain.com/
+│   └── config/
+├── rtorrent.user-domain.com/
+│   └── downloads/
+├── jellyfin.user-domain.com/
+│   ├── config/
+│   └── cache/
+├── openclaw.user-domain.com/
+│   └── data/
+└── ...
+```
+
+When an app needs access to other apps' data, it mounts this `home/apps/` tree (or the parent `home/` directory) into the container. Inside the container, the app sees:
+
+```
+/APPBOX_DATA/
+├── plex.user-domain.com/
+│   └── config/
+├── rtorrent.user-domain.com/
+│   └── downloads/
+├── jellyfin.user-domain.com/
+│   ├── config/
+│   └── cache/
+└── ...
+```
+
+### Use cases
+
+| App type | Why it needs shared access | Example |
+|----------|---------------------------|---------|
+| Media players | Read downloads/media from torrent clients | Plex, Jellyfin, Emby reading from `/APPBOX_DATA/<torrent-app>/downloads/` |
+| File managers | Browse and manage all app data | File Browser, SFTPGo exposing `/APPBOX_DATA/` |
+| FTP servers | Remote access to app files | Pure-FTPd serving `/APPBOX_DATA/` |
+| AI assistants | Read/write user files across apps | OpenClaw accessing documents, media, configs |
+| OS/VPS apps | Full access to user's app ecosystem | Ubuntu Desktop, Debian browsing all data |
+| Sync tools | Sync data between apps or to external services | Nextcloud, OwnCloud syncing from `/APPBOX_DATA/` |
+
+### Configuring shared access in appbox.yml
+
+Use the `shared_data` section in `appbox.yml` to mount the shared file system. The `source` uses template variables that the platform resolves at install time:
+
+```yaml
+shared_data:
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+    destination: "/APPBOX_DATA"
+    permissions: "rw"
+    uid: 1000
+```
+
+The source path typically points to:
+
+| Path | Contents |
+|------|----------|
+| `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/` | All apps' shared volumes (most common) |
+| `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/` | The full home directory |
+
+The `destination` is where the shared data appears inside the container. By convention, `/APPBOX_DATA` is used, but you can choose any path that suits your app (e.g. `/media`, `/storage`, `/home/user/data`).
+
+Set `permissions` to `ro` if your app only needs to read other apps' data. Use `rw` if it also needs to write (e.g. a file manager).
 
 ---
 

@@ -598,6 +598,20 @@ ports:
 # The host source path is relative to the user's app directory:
 #   /apps/<app-domain>/<source>
 #
+# SHARED FILE SYSTEM:
+#   Volumes defined here are stored in the user's shared "home" area on
+#   the host at:
+#     /cylostore/<disk>/<cylo_id>/home/apps/<app-domain>/<source>
+#
+#   This means other apps CAN access your app's data if they have the
+#   shared file system mounted. For example, a torrent client's downloads
+#   are visible to media players (Plex, Jellyfin), file managers, FTP
+#   servers, and other apps that mount the shared tree.
+#
+#   If your app needs to access data from other installed apps, use the
+#   `shared_data` section (below the volumes section) to mount the user's
+#   shared home directory into your container.
+#
 # Maps to: appbinds table (app_id, Source, Destination, Permissions, UID, version)
 #
 volumes:
@@ -632,6 +646,65 @@ volumes:
     #
     # Maps to: appbinds.UID (integer)
     uid: 1000
+
+
+# =============================================================================
+# Section 8b: shared_data — Shared File System Access
+# =============================================================================
+# If your app needs to access data from OTHER installed apps (e.g. a media
+# player reading torrent downloads, a file manager browsing all app data,
+# an AI assistant reading user files), you can mount the user's shared home
+# directory into your container.
+#
+# HOW IT WORKS:
+#   Every app's `volumes` are stored on the host under the user's home
+#   directory:
+#     /cylostore/<disk>/<cylo_id>/home/apps/<app-domain>/<source>/
+#
+#   By mounting the parent directory, your app can access ALL other apps'
+#   shared data. Inside the container, the structure looks like:
+#
+#     /APPBOX_DATA/
+#     ├── rtorrent.user-domain.com/
+#     │   └── downloads/
+#     ├── plex.user-domain.com/
+#     │   └── config/
+#     └── ...
+#
+# TEMPLATE VARIABLES:
+#   The `source` path uses template variables that the platform resolves
+#   at install time:
+#     %CYLO.DISK_NAME%  — the storage disk name (e.g. "sda", "disk3")
+#     %CYLO.ID%         — the user's Cylo ID
+#
+# Maps to: appbinds table (lock_to_bind_dir='host')
+#
+# Uptime Kuma doesn't need shared file system access, so this is empty.
+# See the examples below for apps that do.
+shared_data: []
+
+# SHARED DATA EXAMPLES (not used by Uptime Kuma, shown for reference):
+#
+# Example 1: Media player accessing all app data (Plex, Jellyfin, etc.)
+#   shared_data:
+#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+#       destination: "/APPBOX_DATA"
+#       permissions: "rw"
+#       uid: 1000
+#
+# Example 2: File manager or FTP server exposing the full home directory
+#   shared_data:
+#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/"
+#       destination: "/home/user"
+#       permissions: "rw"
+#       uid: 1000
+#
+# Example 3: Read-only access for an app that only needs to browse
+#   shared_data:
+#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+#       destination: "/APPBOX_DATA"
+#       permissions: "ro"
+#       uid: 1000
 
 
 # =============================================================================

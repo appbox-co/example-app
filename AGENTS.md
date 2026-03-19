@@ -52,6 +52,8 @@ When creating or modifying an Appbox app, always follow these rules:
 
 9. **Web app ports** — If your app is a web app (`is_web_app: true`) and only serves a web UI, do NOT define ports in the `ports` section. The platform reverse-proxies HTTP via nginx automatically. Instead, set a `VIRTUAL_PORT` env var to the HTTP port your app listens on (default is 80). This must always be a plain HTTP port — the platform handles SSL. Defining the HTTP port in `ports` would expose it publicly, bypassing the reverse proxy and SSL.
 
+10. **Shared file system** — App volumes are stored in a shared area on the host (`/cylostore/<disk>/<cylo>/home/apps/<domain>/`). Other apps can access this data if they have the shared file system mounted. If your app needs to read/write data from other apps (e.g. file manager browsing all data, AI assistant accessing files), use the `shared_data` section in `appbox.yml` to mount the user's home directory into the container. The source uses template variables: `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/`. By convention, the destination is `/APPBOX_DATA`.
+
 ## appbox.yml
 
 The `appbox.yml` file is the single source of truth for app configuration. See `README.md` for the full schema reference.
@@ -60,6 +62,7 @@ The `appbox.yml` file is the single source of truth for app configuration. See `
 - Template variables use `%TABLE.FIELD%` syntax (ALL CAPS), e.g. `%INSTANCE.ID%`, `%PORTS|0.EXTERNAL%`.
 - Custom fields become environment variables inside the container, keyed by the field name.
 - Fields of type `externalURL` render as clickable links on the installed app page. For predictable URLs, set `default_value` to a template like `https://%DOMAIN.DOMAIN%/` with `template_type: instance` — the platform resolves this at install time. For URLs only known at runtime (dynamic ports, generated paths), set the value via the API callback instead (include `custom_fields` array in the POST body). For other field type updates via callback, contact support.
+- Use the `shared_data` section to mount the user's shared home directory if the app needs access to other apps' data. Source must use template variables (e.g. `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/`).
 - Do not include fields that are platform-managed (e.g. `privileged`, `security_opt`, `network_mode`, `dns`, `type`, `registry`). They will be ignored.
 
 ## Dockerfile Pattern
