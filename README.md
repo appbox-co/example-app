@@ -601,6 +601,15 @@ When an app needs access to other apps' data, it mounts this `home/apps/` tree (
 └── ...
 ```
 
+### Storage rules for /APPBOX_DATA
+
+- `/APPBOX_DATA` is shared-access space, not your app's primary storage location.
+- Do not store your app's own database, config, or internal state directly under `/APPBOX_DATA`.
+- Keep app state in your normal persistent app volumes from the `volumes` section.
+- `/APPBOX_DATA/apps` is for accessing data from other apps, not for your app's own state.
+- `/APPBOX_DATA/storage` is user general storage and can be used for user-managed files when needed.
+- Assume `/APPBOX_DATA` may be owned by nobody inside the container; design your app around its own writable volume paths.
+
 ### Use cases
 
 | App type | Why it needs shared access | Example |

@@ -671,6 +671,16 @@ volumes:
 #     │   └── config/
 #     └── ...
 #
+# IMPORTANT STORAGE RULES:
+#   - Do NOT use /APPBOX_DATA as your app's primary data directory.
+#   - /APPBOX_DATA may be owned by nobody inside the container.
+#   - Your app's own state/config/database must stay in its normal
+#     persistent app volume(s) from the `volumes` section.
+#   - /APPBOX_DATA/apps is for reading/writing OTHER apps' shared data.
+#     Do not store your own app state there.
+#   - /APPBOX_DATA/storage is user general storage and may be used for
+#     user-managed files if your app needs that behavior.
+#
 # TEMPLATE VARIABLES:
 #   The `source` path uses template variables that the platform resolves
 #   at install time:
