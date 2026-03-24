@@ -822,6 +822,10 @@ custom_fields:
     #   alphaNumeric     — Text input, alphanumeric characters only
     #   password         — Password field (masked input, auto-generated if default is %RAND.N%)
     #   complexPassword  — Password with complexity requirements (uppercase, lowercase, number, special)
+    #   generatedPassword — Auto-generated password, hidden during install, shown as a masked
+    #                       password on the installed app page (with reveal/copy). Use with
+    #                       default_value: "%RAND.N%" for server-generated tokens or secrets
+    #                       that the user should not choose but may need to view later.
     #   number           — Numeric input
     #   email            — Email address input with validation
     #   date             — Date input
