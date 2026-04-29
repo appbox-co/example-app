@@ -211,14 +211,14 @@ Mounts the user's shared home directory into the container so the app can access
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `source` | string | Yes | Absolute host path using template variables (e.g. `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/`) |
+| `source` | string | Yes | Absolute host path using template variables (e.g. `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/`) |
 | `destination` | string | Yes | Mount point inside the container (e.g. `/APPBOX_DATA`) |
 | `permissions` | string | Yes | `rw` (read-write) or `ro` (read-only) |
 | `uid` | integer | Yes | Owner UID inside the container. Always `1000` |
 
 ```yaml
 shared_data:
-  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/"
     destination: "/APPBOX_DATA"
     permissions: "rw"
     uid: 1000
@@ -574,31 +574,39 @@ Apps on the Appbox platform can access each other's data through a shared file s
 Every app's `volumes` (the `home` storage) are stored on the host at:
 
 ```
-/cylostore/<disk>/<cylo_id>/home/apps/
-├── plex.user-domain.com/
-│   └── config/
-├── rtorrent.user-domain.com/
-│   └── downloads/
-├── jellyfin.user-domain.com/
-│   ├── config/
-│   └── cache/
-├── openclaw.user-domain.com/
-│   └── data/
-└── ...
+/cylostore/<disk>/<cylo_id>/home/
+│ 
+├── apps/
+│   ├── plex.user-domain.com/
+│   │   └── config/
+│   ├── rtorrent.user-domain.com/
+│   │   └── downloads/
+│   ├── jellyfin.user-domain.com/
+│   │   ├── config/
+│   │   └── cache/
+│   ├── openclaw.user-domain.com/
+│   │   └── data/
+│   └── ...
+└── storage/
+    └── ...
 ```
 
-When an app needs access to other apps' data, it mounts this `home/apps/` tree (or the parent `home/` directory) into the container. Inside the container, the app sees:
+When an app needs access to other apps' data, it mounts this `home/` tree into the container. Inside the container, the app sees:
 
 ```
 /APPBOX_DATA/
-├── plex.user-domain.com/
-│   └── config/
-├── rtorrent.user-domain.com/
-│   └── downloads/
-├── jellyfin.user-domain.com/
-│   ├── config/
-│   └── cache/
-└── ...
+│ 
+├── apps/
+│   ├── plex.user-domain.com/
+│   │   └── config/
+│   ├── rtorrent.user-domain.com/
+│   │   └── downloads/
+│   ├── jellyfin.user-domain.com/
+│   │   ├── config/
+│   │   └── cache/
+│   └── ...
+└── storage/
+    └── ...
 ```
 
 ### Storage rules for /APPBOX_DATA
@@ -614,7 +622,7 @@ When an app needs access to other apps' data, it mounts this `home/apps/` tree (
 
 | App type | Why it needs shared access | Example |
 |----------|---------------------------|---------|
-| Media players | Read downloads/media from torrent clients | Plex, Jellyfin, Emby reading from `/APPBOX_DATA/<torrent-app>/downloads/` |
+| Media players | Read downloads/media from other apps | Plex, Jellyfin, Emby reading from `/APPBOX_DATA/apps/<other-app>/media/` |
 | File managers | Browse and manage all app data | File Browser, SFTPGo exposing `/APPBOX_DATA/` |
 | FTP servers | Remote access to app files | Pure-FTPd serving `/APPBOX_DATA/` |
 | AI assistants | Read/write user files across apps | OpenClaw accessing documents, media, configs |
@@ -627,7 +635,7 @@ Use the `shared_data` section in `appbox.yml` to mount the shared file system. T
 
 ```yaml
 shared_data:
-  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/apps/"
     destination: "/APPBOX_DATA"
     permissions: "rw"
     uid: 1000
@@ -637,7 +645,6 @@ The source path typically points to:
 
 | Path | Contents |
 |------|----------|
-| `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/` | All apps' shared volumes (most common) |
 | `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/` | The full home directory |
 
 The `destination` is where the shared data appears inside the container. By convention, `/APPBOX_DATA` is used, but you can choose any path that suits your app (e.g. `/media`, `/storage`, `/home/user/data`).

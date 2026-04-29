@@ -31,28 +31,30 @@ When creating or modifying an Appbox app, always follow these rules:
 
 1. **Single container** — Everything in one Docker container. No docker-compose, no sidecars, no external database containers. If the app needs a database, embed it (e.g. SQLite) or bundle it inside the same container.
 
-2. **UID 1000** — The app process MUST run as UID 1000 inside the container. All data directories MUST be owned by 1000:1000. The entrypoint runs as root only for setup, then drops to 1000 via `gosu`. This is a hard requirement.
+2. **Architecture `linux/amd64`** — All images MUST be built for `linux/amd64`. The platform runs exclusively on x86_64 hosts. When building on an ARM machine (e.g. Apple Silicon), always pass `--platform linux/amd64` to `docker build` and `docker run`. If the app downloads architecture-specific binaries, use Docker's `TARGETARCH` build arg to select the correct variant.
 
-3. **User namespaces** — All containers run with userns enabled. UID 0 inside the container is NOT root on the host. Never assume host-level root access.
+3. **UID 1000** — The app process MUST run as UID 1000 inside the container. All data directories MUST be owned by 1000:1000. The entrypoint runs as root only for setup, then drops to 1000 via `gosu`. This is a hard requirement.
 
-4. **Entrypoint lifecycle** — The entrypoint script must follow this pattern:
+4. **User namespaces** — All containers run with userns enabled. UID 0 inside the container is NOT root on the host. Never assume host-level root access.
+
+5. **Entrypoint lifecycle** — The entrypoint script must follow this pattern:
    - Check `/etc/app_configured` to detect first boot vs restart
    - Fresh install: start app, configure admin user, stop app
    - Upgrade: skip user creation (data exists), run migrations if needed
    - Call platform API callback: `POST https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}`
    - Start app with `exec gosu 1000:1000 "$@"`
 
-5. **Secure by default** — Use `complexPassword` validation for admin passwords. Disable public registration. Never hardcode credentials.
+6. **Secure by default** — Use `complexPassword` validation for admin passwords. Disable public registration. Never hardcode credentials.
 
-6. **Volume UID** — Set `uid: 1000` in all volume definitions in `appbox.yml`.
+7. **Volume UID** — Set `uid: 1000` in all volume definitions in `appbox.yml`.
 
-7. **Prefer upstream images** — Build on official, well-maintained Docker images rather than building from scratch. If the app needs multiple services running in a single container (e.g. app + database + worker), you MUST use **s6-overlay** as the init/process supervisor — it handles process lifecycle, restarts, and signal forwarding correctly. For single-process apps, a plain bash entrypoint with `exec` is fine. Any init system is acceptable when reusing upstream images.
+8. **Prefer upstream images** — Build on official, well-maintained Docker images rather than building from scratch. If the app needs multiple services running in a single container (e.g. app + database + worker), you MUST use **s6-overlay** as the init/process supervisor — it handles process lifecycle, restarts, and signal forwarding correctly. For single-process apps, a plain bash entrypoint with `exec` is fine. Any init system is acceptable when reusing upstream images.
 
-8. **moduser.sh** — All apps MUST include `/moduser.sh` in the container. It accepts one argument (`new_password`) and overwrites the default user's password. This is used for account recovery when a user is locked out.
+9. **moduser.sh** — All apps MUST include `/moduser.sh` in the container. It accepts one argument (`new_password`) and overwrites the default user's password. This is used for account recovery when a user is locked out.
 
-9. **Web app ports** — If your app is a web app (`is_web_app: true`) and only serves a web UI, do NOT define ports in the `ports` section. The platform reverse-proxies HTTP via nginx automatically. Instead, set a `VIRTUAL_PORT` env var to the HTTP port your app listens on (default is 80). This must always be a plain HTTP port — the platform handles SSL. Defining the HTTP port in `ports` would expose it publicly, bypassing the reverse proxy and SSL.
+10. **Web app ports** — If your app is a web app (`is_web_app: true`) and only serves a web UI, do NOT define ports in the `ports` section. The platform reverse-proxies HTTP via nginx automatically. Instead, set a `VIRTUAL_PORT` env var to the HTTP port your app listens on (default is 80). This must always be a plain HTTP port — the platform handles SSL. Defining the HTTP port in `ports` would expose it publicly, bypassing the reverse proxy and SSL.
 
-10. **Shared file system** — App volumes are stored in a shared area on the host (`/cylostore/<disk>/<cylo>/home/apps/<domain>/`). Other apps can access this data if they have the shared file system mounted. If your app needs to read/write data from other apps (e.g. file manager browsing all data, AI assistant accessing files), use the `shared_data` section in `appbox.yml` to mount the user's home directory into the container. The source uses template variables: `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/`. By convention, the destination is `/APPBOX_DATA`. Do not use `/APPBOX_DATA` for your app's own state/config/database; keep that in normal persistent app volumes. `/APPBOX_DATA/apps` is for cross-app access, while `/APPBOX_DATA/storage` is user general storage.
+11. **Shared file system** — App volumes are stored in a shared area on the host (`/cylostore/<disk>/<cylo>/home/apps/<domain>/`). Other apps can access this data if they have the shared file system mounted. If your app needs to read/write data from other apps (e.g. file manager browsing all data, AI assistant accessing files), use the `shared_data` section in `appbox.yml` to mount the user's home directory into the container. The source uses template variables: `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/`. By convention, the destination is `/APPBOX_DATA`. Do not use `/APPBOX_DATA` for your app's own state/config/database; keep that in normal persistent app volumes. `/APPBOX_DATA/apps` is for cross-app access, while `/APPBOX_DATA/storage` is user general storage.
 
 ## appbox.yml
 
@@ -221,8 +223,8 @@ See `TESTING.md` for the complete testing framework with checklists. All tests m
 Quick smoke test:
 
 ```bash
-docker build -t my-app .
-docker run -e USERNAME=admin -e PASSWORD='TestPass123!' \
+docker build --platform linux/amd64 -t my-app .
+docker run --platform linux/amd64 -e USERNAME=admin -e PASSWORD='TestPass123!' \
   -e INSTANCE_ID=test -e SKIP_APPBOX_CALLBACK=1 \
   -p 3001:3001 my-app
 ```
@@ -361,3 +363,4 @@ When the app uses an embedded database (PostgreSQL, MySQL, SQLite) and has no CL
 - **Missing s6 service dependencies** — s6-rc starts services in parallel with init scripts. Without explicit `dependencies.d` files, services start before directories are chowned, before the user is created, etc. Always check the s6 dependency graph
 - **Docker volumes start root-owned** — A new Docker volume has root:root ownership. Your entrypoint or init scripts must chown it before the app writes to it. For LSIO images, the app-specific init script (e.g. `init-config-*`) usually handles this, but only if services wait for it (see s6 dependency ordering)
 - **LSIO `DB_PASSWORD` check** — Some LSIO images (like imagegenius/immich) require `DB_PASSWORD` to be non-empty even when using local trust auth. Set it to a dummy value in `appbox.yml`
+- **Building for the wrong architecture** — The platform is `linux/amd64` only. Building without `--platform linux/amd64` on an ARM host (e.g. Apple Silicon Mac) produces an `arm64` image that will not run in production. Always pass `--platform linux/amd64` to both `docker build` and `docker run`

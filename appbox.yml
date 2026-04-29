@@ -664,12 +664,19 @@ volumes:
 #   By mounting the parent directory, your app can access ALL other apps'
 #   shared data. Inside the container, the structure looks like:
 #
-#     /APPBOX_DATA/
-#     ├── rtorrent.user-domain.com/
-#     │   └── downloads/
-#     ├── plex.user-domain.com/
-#     │   └── config/
-#     └── ...
+#   /APPBOX_DATA/
+#   │ 
+#   ├── apps/
+#   │   ├── plex.user-domain.com/
+#   │   │   └── config/
+#   │   ├── rtorrent.user-domain.com/
+#   │   │   └── downloads/
+#   │   ├── jellyfin.user-domain.com/
+#   │   │   ├── config/
+#   │   │   └── cache/
+#   │   └── ...
+#   └── storage/
+#       └── ...
 #
 # IMPORTANT STORAGE RULES:
 #   - Do NOT use /APPBOX_DATA as your app's primary data directory.
@@ -697,7 +704,7 @@ shared_data: []
 #
 # Example 1: Media player accessing all app data (Plex, Jellyfin, etc.)
 #   shared_data:
-#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/"
 #       destination: "/APPBOX_DATA"
 #       permissions: "rw"
 #       uid: 1000
@@ -711,7 +718,7 @@ shared_data: []
 #
 # Example 3: Read-only access for an app that only needs to browse
 #   shared_data:
-#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/"
 #       destination: "/APPBOX_DATA"
 #       permissions: "ro"
 #       uid: 1000
