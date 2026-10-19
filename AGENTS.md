@@ -1,3 +1,8 @@
+---
+description:
+alwaysApply: false
+---
+
 # AGENTS.md
 
 This repository is an Appbox example app — a reference implementation for packaging apps for the [Appbox](https://appbox.co) platform. AI coding agents are welcome to use this as a template when creating new Appbox apps.
@@ -54,7 +59,34 @@ When creating or modifying an Appbox app, always follow these rules:
 
 10. **Web app ports** — If your app is a web app (`is_web_app: true`) and only serves a web UI, do NOT define ports in the `ports` section. The platform reverse-proxies HTTP via nginx automatically. Instead, set a `VIRTUAL_PORT` env var to the HTTP port your app listens on (default is 80). This must always be a plain HTTP port — the platform handles SSL. Defining the HTTP port in `ports` would expose it publicly, bypassing the reverse proxy and SSL.
 
-11. **Shared file system** — App volumes are stored in a shared area on the host (`/cylostore/<disk>/<cylo>/home/apps/<domain>/`). Other apps can access this data if they have the shared file system mounted. If your app needs to read/write data from other apps (e.g. file manager browsing all data, AI assistant accessing files), use the `shared_data` section in `appbox.yml` to mount the user's home directory into the container. The source uses template variables: `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/`. By convention, the destination is `/APPBOX_DATA`. Do not use `/APPBOX_DATA` for your app's own state/config/database; keep that in normal persistent app volumes. `/APPBOX_DATA/apps` is for cross-app access, while `/APPBOX_DATA/storage` is user general storage.
+11. **Shared file system** — If the app needs to read or write data from other
+apps, use `shared_data` with the documented platform source template and a
+container-visible destination such as `/APPBOX_DATA`. Do not use shared data
+for the app's own configuration or database; keep app state in normal
+persistent volumes.
+
+12. **Declarative actions** — If the app uses Custom Tables or Custom Buttons, define explicit typed operations backed by a fixed manager executable in the app image. Use stable table, field, button, and operation IDs across compatible versions. Never build shell commands from row or form values. Pass validated JSON through stdin and mark credentials as sensitive. See `CUSTOM_TABLES.md`.
+
+13. **Immutable action releases** — Typed operations require an immutable released image containing the exact declared manager. Do not publish an action-enabled version that relies only on a mutable image tag.
+
+14. **Conditional installation fields** — Use `condition` with another field's
+manifest key for optional or mutually exclusive install inputs. Prefer
+`clear_when_hidden: true` for credentials. Conditions affect presentation and
+submission only; they must never replace server-side or manager validation.
+See the main README for the supported operators and complete examples.
+
+15. **Conditional Custom Buttons** — Use `visibility_conditions` only with
+declared, non-sensitive installation fields. All conditions must match. Missing
+fields fail closed, and `in`/`not_in` use a YAML list in `value`. The platform
+must enforce the conditions at execution time; frontend hiding is never an
+authorization boundary. See `CUSTOM_TABLES.md`.
+
+16. **Sensitive field reveal policy** — Declare `sensitive: true` for every
+stored credential. Such fields are write-only by default. Add
+`revealable: true` only when an authorized instance owner must recover the
+credential; never expose it in ordinary responses, logs, or errors.
+
+17. **Operation readiness** — Platform/container readiness only permits typed-operation dispatch. Docker `HEALTHCHECK` is optional and does not prove operation readiness or success. Managers must use bounded, operation-specific readiness checks, verify authoritative postconditions, and return non-zero when success cannot be established. Treat `initial_rows_operation` as part of install completion and make it idempotent and convergent after partial work.
 
 ## appbox.yml
 
@@ -64,8 +96,10 @@ The `appbox.yml` file is the single source of truth for app configuration. See `
 - Template variables use `%TABLE.FIELD%` syntax (ALL CAPS), e.g. `%INSTANCE.ID%`, `%PORTS|0.EXTERNAL%`.
 - Custom fields become environment variables inside the container, keyed by the field name.
 - Fields of type `externalURL` render as clickable links on the installed app page. For predictable URLs, set `default_value` to a template like `https://%DOMAIN.DOMAIN%/` with `template_type: instance` — the platform resolves this at install time. For URLs only known at runtime (dynamic ports, generated paths), set the value via the API callback instead (include `custom_fields` array in the POST body). For other field type updates via callback, contact support.
-- Use the `shared_data` section to mount the user's shared home directory if the app needs access to other apps' data. Source must use template variables (e.g. `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/`).
+- Use `shared_data` with the documented platform source template when the app
+  needs access to other apps' data.
 - Do not include fields that are platform-managed (e.g. `privileged`, `security_opt`, `network_mode`, `dns`, `type`, `registry`). They will be ignored.
+- Optional `custom_tables`, `custom_buttons`, and `typed_operations` are documented in `CUSTOM_TABLES.md`. Do not add them unless the image contains and tests the fixed manager executable.
 
 ## Dockerfile Pattern
 
@@ -132,7 +166,7 @@ EXPOSE <internal port>
 
 ```bash
 #!/bin/bash
-set -x
+set -e
 
 APP_USER="1000:1000"
 
@@ -141,7 +175,7 @@ callback_installed() {
     local callback_url="https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}"
     local headers=(-H "Accept: application/json" -H "Content-Type:application/json")
     if [[ -n "${CALLBACK_TOKEN:-}" ]]; then
-        headers+=(-H "Authorization: Bearer ${CALLBACK_TOKEN}")
+        headers+=(-H "X-Cylo-Callback-Token: ${CALLBACK_TOKEN}")
     fi
     until curl -fsS -o /dev/null "${headers[@]}" -X POST "${callback_url}"; do
         sleep 5
@@ -211,7 +245,7 @@ exec "$@"
 ```
 
 **Key differences from single-process pattern:**
-- `set -e` (not `set -x`) is preferred since s6 services produce their own logs.
+- `set -e` is preferred. Do not enable unconditional `set -x`; expanded commands can expose passwords and tokens in logs.
 - The lifecycle subshell uses `set +e` to prevent inherited `set -e` from killing it when `wait_for_http` times out.
 - Use a generous timeout (300 × 2s = 10 min) for `wait_for_http` since s6 init scripts may take time before services start.
 - `exec "$@"` becomes `exec /init` (from CMD), NOT `exec gosu ... "$@"`. s6-overlay's service `run` scripts handle user switching via `gosu` or `s6-setuidgid`.

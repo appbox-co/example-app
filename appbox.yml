@@ -14,6 +14,7 @@
 #   - Volume bind mounts for persistent data
 #   - Environment variables injected into the container
 #   - Custom fields shown to the user during install
+#   - Optional Custom Tables, Custom Buttons, and typed operations
 #   - Advanced container settings (devices, ulimits, sysctls, chains)
 #
 # STRUCTURE:
@@ -40,20 +41,17 @@
 # Section 1: app — App Store Metadata
 # =============================================================================
 # These fields control how your app appears in the Appbox app store.
-# Maps to the `apps` table in the database.
 #
 app:
 
   # display_name (REQUIRED)
   # The name shown in the app store, on cards, and in the dashboard.
   # Must be unique across all apps on the platform.
-  # Maps to: apps.display_name (varchar, unique)
   display_name: "Uptime Kuma"
 
   # publisher (REQUIRED)
   # The developer or organization name shown below the app title.
   # Displayed as "By <publisher>" on store cards and detail pages.
-  # Maps to: apps.publisher (varchar)
   publisher: "louislam"
 
   # description (REQUIRED)
@@ -70,7 +68,6 @@ app:
   #   4. ## Good to Know (optional) — caveats, licensing notes, or anything
   #      users should be aware of before installing.
   #
-  # Maps to: apps.description (text)
   description: |
     Uptime Kuma is a self-hosted monitoring tool similar to Uptime Robot. It provides a modern dashboard for tracking the availability of your services with rich notification support.
 
@@ -92,14 +89,12 @@ app:
   # short_description
   # A brief one-line summary shown on app store cards.
   # If omitted, the platform truncates `description` for card display.
-  # Maps to: apps.short_description (text)
   short_description: "A self-hosted monitoring tool like Uptime Robot"
 
   # icon
   # Path to the app icon file, relative to this repository's root.
   # Should be a 512x512 PNG image. This is uploaded to the platform's
   # image server during app registration.
-  # Maps to: apps.icon_image (varchar) — stored as the uploaded filename
   icon: icon.png
 
   # categories
@@ -114,25 +109,21 @@ app:
   #   Torrent Clients, VPS, Webserver, Windows
   #
   # All apps are automatically added to "All Apps" — do not list it here.
-  # Maps to: links table (type='appcategory', relid1=app_id, relid2=category_id)
   categories:
     - "Communication"
 
   # devsite
   # URL to the developer's website or project homepage. Shown as a
   # "Visit developer" link on the app detail page.
-  # Maps to: apps.devsite (varchar)
   devsite: "https://github.com/louislam/uptime-kuma"
 
   # source_repo
   # URL to the source code repository. Helps with transparency and trust.
-  # Maps to: apps.source_repo (varchar)
   source_repo: "https://github.com/louislam/uptime-kuma"
 
   # documentation_url
   # Optional link to internal Appbox docs (or external docs) shown on app details.
   # Use a docs route like "/docs/apps/my-app-setup" when available.
-  # Maps to: apps.documentation_url (text)
   documentation_url: "/docs/apps/uptime-kuma-setup"
 
 
@@ -140,9 +131,8 @@ app:
 # Section 2: image — Docker Image
 # =============================================================================
 # Defines the Docker image to pull and run. The `version` and `tag` fields
-# create the initial entry in the `app_versions` table.
+# identify the image release shown to users.
 #
-# Maps to: apps table (type, registry, Image) + app_versions table
 #
 image:
 
@@ -150,20 +140,17 @@ image:
   # The Docker image name (without tag). For Docker Hub, use the full
   # repository path (e.g. "louislam/uptime-kuma"). For the private registry,
   # use just the image name (e.g. "uptime-kuma").
-  # Maps to: apps.Image (varchar)
   name: "uptime-kuma"
 
   # version (REQUIRED)
   # The version string for this release, shown to users in the app store
-  # and dashboard. This creates an entry in the `app_versions` table.
-  # Maps to: app_versions.version (varchar)
+  # and dashboard.
   version: "2"
 
   # tag
   # The Docker image tag to pull. Defaults to the value of `version` if
   # omitted. Useful when your version string differs from the Docker tag
   # (e.g. version "1.0.0" might use tag "v1.0.0" or "latest").
-  # Maps to: app_versions.tag (varchar)
   tag: "2"
 
 
@@ -173,7 +160,6 @@ image:
 # Controls how the Docker container is created and constrained.
 # All fields are optional with sensible defaults.
 #
-# Maps to: various fields on the `apps` table (Docker API parameters)
 #
 container:
 
@@ -181,21 +167,18 @@ container:
   # Override the container's default CMD. This is passed as the command
   # argument to the Docker API. Leave null to use the image's default CMD.
   # Format: string (e.g. "node server.js" or "/bin/sh -c 'start.sh'")
-  # Maps to: apps.cmd (varchar)
   # Default: null (use image default)
   cmd: null
 
   # user
   # Run the container process as this user. Can be a username or UID.
   # Format: "user", "uid", "user:group", or "uid:gid"
-  # Maps to: apps.User (text)
   # Default: null (use image default)
   user: null
 
   # group_add
   # Additional groups for the container process. Comma-separated.
   # Useful for granting access to host devices (e.g. "video,render").
-  # Maps to: apps.GroupAdd (text)
   # Default: null
   group_add: null
 
@@ -203,14 +186,12 @@ container:
   # Hard memory limit in gigabytes. The container is killed (OOM) if it
   # exceeds this. Set to 0 for unlimited. Choose based on your app's
   # typical usage — too low causes crashes, too high wastes resources.
-  # Maps to: apps.Memory (integer, GB)
   # Default: 0 (unlimited)
   memory: 1
 
   # memory_swap
   # Total memory + swap limit in gigabytes. Must be >= memory.
   # Set to 0 for unlimited swap. Set equal to `memory` to disable swap.
-  # Maps to: apps.MemorySwap (integer, GB)
   # Default: 0 (unlimited)
   memory_swap: 0
 
@@ -218,14 +199,12 @@ container:
   # Soft memory limit in gigabytes. The kernel reclaims memory from the
   # container when the host is under memory pressure, down to this limit.
   # Should be lower than `memory`.
-  # Maps to: apps.MemoryReservation (integer, GB)
   # Default: 0 (no reservation)
   memory_reservation: 0
 
   # cpus
   # CPU limit as a decimal. 1.0 = one full CPU core. 0.5 = half a core.
   # 0 = unlimited. Most apps work fine with 0.5–2.0.
-  # Maps to: apps.CPUs (integer/float)
   # Default: 0 (unlimited)
   cpus: 0
 
@@ -234,7 +213,6 @@ container:
   # This properly handles signal forwarding and zombie process reaping.
   # Enable this if your app doesn't handle signals well on its own.
   # Not needed if your entrypoint uses `exec` to replace the shell process.
-  # Maps to: apps.Init (integer, 0/1)
   # Default: false
   init: false
 
@@ -244,7 +222,6 @@ container:
   # specific kernel capabilities beyond the Docker defaults.
   # Common values: SYS_ADMIN, NET_ADMIN, NET_RAW, SYS_PTRACE, MKNOD
   # Full list: https://man7.org/linux/man-pages/man7/capabilities.7.html
-  # Maps to: apps.CapAdd (varchar)
   # Default: null (no additional capabilities)
   cap_add: null
 
@@ -252,7 +229,6 @@ container:
   # Linux capabilities to remove from the container. Comma-separated.
   # Use to harden the container by removing unneeded capabilities.
   # Example: "ALL" drops everything (then add back only what's needed).
-  # Maps to: apps.CapDrop (varchar)
   # Default: null (keep Docker defaults)
   cap_drop: null
 
@@ -260,14 +236,12 @@ container:
   # Size of /dev/shm (shared memory) in bytes. Increase this if your app
   # needs shared memory (e.g. browsers, video processing).
   # Example: 67108864 = 64MB, 2147483648 = 2GB
-  # Maps to: apps.ShmSize (integer)
   # Default: null (Docker default, usually 64MB)
   shm_size: null
 
   # pids_limit
   # Maximum number of PIDs (processes) allowed in the container.
   # Prevents fork bombs and runaway process creation.
-  # Maps to: apps.PidsLimit (integer)
   # Default: null (unlimited)
   pids_limit: null
 
@@ -278,7 +252,6 @@ container:
 # Controls how the app is exposed to the internet through the platform's
 # reverse proxy and domain management.
 #
-# Maps to: various fields on the `apps` table
 #
 networking:
 
@@ -286,7 +259,6 @@ networking:
   # The default subdomain prefix used when assigning a domain to this app.
   # For example, "uptime-kuma" creates "uptime-kuma.user-domain.com".
   # Must be URL-safe (lowercase letters, numbers, hyphens).
-  # Maps to: apps.subdomain (varchar)
   subdomain: "uptime-kuma"
 
   # is_web_app
@@ -294,7 +266,6 @@ networking:
   # When true, the platform sets up a reverse proxy to route traffic
   # from the assigned domain to the container's internal port.
   # When false, the app is only accessible via its assigned port(s).
-  # Maps to: apps.IsWebApp (integer, 0/1)
   # Default: false
   is_web_app: true
 
@@ -302,14 +273,12 @@ networking:
   # Whether the app requires a domain to be assigned during installation.
   # Most web apps need this. Non-web apps (like database servers or
   # torrent clients accessed by port) may not.
-  # Maps to: apps.RequiresDomain (integer, 0/1)
   # Default: false
   requires_domain: true
 
   # ssl
   # Whether to provision an SSL certificate for the app's domain.
   # Should be true for all web apps to ensure HTTPS.
-  # Maps to: apps.ssl (integer, 0/1)
   # Default: false
   ssl: true
 
@@ -318,7 +287,6 @@ networking:
   # Useful for apps like web servers or CMS platforms that serve
   # multiple websites. If true the receving end needs to use the proxy protocol to receive 
   # the traffic.
-  # Maps to: apps.multiple_domains (integer, 0/1)
   # Default: false
   multiple_domains: false
 
@@ -326,7 +294,6 @@ networking:
   # When true, TCP traffic is forwarded directly to the container without
   # HTTP processing by the reverse proxy. Use for non-HTTP protocols
   # (e.g. game servers, mail servers, custom TCP services).
-  # Maps to: apps.tcp_passthrough (boolean)
   # Default: false
   tcp_passthrough: false
 
@@ -337,7 +304,6 @@ networking:
 # Controls how the platform manages this app's lifecycle: installations,
 # restarts, updates, and data migration.
 #
-# Maps to: various fields on the `apps` table
 #
 behavior:
 
@@ -345,7 +311,6 @@ behavior:
   # How many resource slots this app consumes when installed. Each user
   # has a limited number of slots. Simple apps use 1 slot. Resource-heavy
   # apps (like Plex, Nextcloud) may use 2–4 slots.
-  # Maps to: apps.app_slots (integer)
   # Default: 1
   app_slots: 1
 
@@ -357,15 +322,13 @@ behavior:
   # install as complete immediately after starting the container.
   # Set to true for apps that need first-run setup time before the user
   # accesses them (e.g. database migrations, initial config).
-  # Maps to: apps.expect_callback (integer, 0/1)
   # Default: false
   expect_callback: true
 
   # callback_requires_auth
   # Whether the callback request from the container must include an
   # authentication token. When true, the container must send the
-  # CALLBACK_TOKEN environment variable as a Bearer token.
-  # Maps to: apps.callback_requires_auth (integer, 0/1)
+  # CALLBACK_TOKEN environment variable in the X-Cylo-Callback-Token header.
   # Default: false
   callback_requires_auth: false
 
@@ -373,21 +336,18 @@ behavior:
   # Warning message shown to users before they restart the app.
   # Use this to warn about data loss, connected clients being dropped, etc.
   # Set to null for no warning.
-  # Maps to: apps.restartText (varchar)
   # Default: null
   restart_text: null
 
   # can_update
   # Whether users are allowed to update this app to newer versions.
   # Set to false if updates require manual intervention or migration steps.
-  # Maps to: apps.canUpdate (integer, 0/1)
   # Default: true
   can_update: true
 
   # update_text
   # Warning message shown to users before they update the app.
   # Use this to warn about breaking changes or backup recommendations.
-  # Maps to: apps.updateText (varchar)
   # Default: null
   update_text: null
 
@@ -395,7 +355,6 @@ behavior:
   # Whether users can downgrade to an older version of this app.
   # Generally false, as downgrades can cause data corruption if the
   # database schema has changed.
-  # Maps to: apps.allow_downgrade (smallint, 0/1)
   # Default: false
   allow_downgrade: false
 
@@ -403,7 +362,6 @@ behavior:
   # Whether to automatically restart the app every 15 days to pick up
   # renewed SSL certificates. Only needed for apps that load certificates
   # at startup and don't watch for changes.
-  # Maps to: apps.ssl_restart (integer, 0/1)
   # Default: false
   ssl_restart: false
 
@@ -415,7 +373,6 @@ behavior:
 # Text shown to users during the installation process. Use these to provide
 # context, instructions, or important notes.
 #
-# Maps to: apps table
 #
 install:
 
@@ -423,7 +380,6 @@ install:
   # Shown above the custom fields form during installation. Use to explain
   # what the custom fields are for or provide pre-install instructions.
   # Supports plain text.
-  # Maps to: apps.custom_field_preinstall_description (varchar)
   # Default: null
   pre_description: "Choose a username and password for your Uptime Kuma admin account."
 
@@ -431,7 +387,6 @@ install:
   # Shown after installation completes. Use to provide getting-started
   # instructions, default credentials, or links to documentation.
   # Supports plain text.
-  # Maps to: apps.custom_field_postinstall_description (varchar)
   # Default: null
   post_description: "Your monitoring dashboard is ready! Log in with the credentials you chose during installation."
 
@@ -439,7 +394,6 @@ install:
   # A custom description for the install page, replacing the default one.
   # Use only when the standard app description is not suitable for the
   # install context.
-  # Maps to: apps.custom_description (text)
   # Default: null
   custom_description: null
 
@@ -491,8 +445,6 @@ install:
 #   udp      — UDP only
 #   combined — Both TCP and UDP on the same port number
 #
-# Maps to: apps table (TCPPortRange, UDPPortRange, CombinedPortRange,
-#          TCPDynamicPorts, UDPDynamicPorts, CombinedDynamicPorts)
 #
 # At runtime, allocated ports are available via template variables:
 #   %PORTS|0.INTERNAL%  — first port's internal number
@@ -506,34 +458,28 @@ ports:
 
   tcp:
     # range — Fixed internal TCP port(s), mapped to random external port(s).
-    # Maps to: apps.TCPPortRange (varchar)
     range: null
 
     # dynamic — Number of random TCP ports to allocate (internal = external).
     # Set to 0 if not needed. Example: a media server needing 5 random ports
     # would set this to 5.
-    # Maps to: apps.TCPDynamicPorts (integer)
     dynamic: 0
 
   udp:
     # range — Fixed internal UDP port(s). Same format as tcp.range.
     # Example: a game server on UDP 27015 would use range: "27015"
-    # Maps to: apps.UDPPortRange (varchar)
     range: null
 
     # dynamic — Number of random UDP ports to allocate.
-    # Maps to: apps.UDPDynamicPorts (integer)
     dynamic: 0
 
   combined:
     # range — Fixed internal port(s) for BOTH TCP and UDP.
     # The same external port is mapped for both protocols.
     # Example: a VoIP server needing port 5060 for both TCP and UDP.
-    # Maps to: apps.CombinedPortRange (text)
     range: null
 
     # dynamic — Number of random ports for both TCP and UDP.
-    # Maps to: apps.CombinedDynamicPorts (integer)
     dynamic: 0
 
 # PORT EXAMPLES (not used by Uptime Kuma, shown for reference):
@@ -591,41 +537,22 @@ ports:
 #   UID 1000:GID 1000 inside the container. Your Dockerfile or entrypoint
 #   should ensure this with: chown -R 1000:1000 /path/to/data
 #
-#   The `uid` field below should always be set to 1000 (matching the
-#   container UID). The platform handles host-side UID remapping via
-#   user namespaces automatically.
-#
-# The host source path is relative to the user's app directory:
-#   /apps/<app-domain>/<source>
+#   The `uid` field should match the user the app runs as inside the
+#   container. This example uses UID 1000.
 #
 # SHARED FILE SYSTEM:
-#   Volumes defined here are stored in the user's shared "home" area on
-#   the host at:
-#     /cylostore/<disk>/<cylo_id>/home/apps/<app-domain>/<source>
+#   If the app needs access to user-managed data shared by other apps,
+#   request `shared_data` access during app review.
 #
-#   This means other apps CAN access your app's data if they have the
-#   shared file system mounted. For example, a torrent client's downloads
-#   are visible to media players (Plex, Jellyfin), file managers, FTP
-#   servers, and other apps that mount the shared tree.
-#
-#   If your app needs to access data from other installed apps, use the
-#   `shared_data` section (below the volumes section) to mount the user's
-#   shared home directory into your container.
-#
-# Maps to: appbinds table (app_id, Source, Destination, Permissions, UID, version)
 #
 volumes:
 
   - # source
-    # The directory name on the host, relative to /apps/<app-domain>/.
-    # This is the name of the folder created on the host filesystem.
-    # Maps to: appbinds.Source (varchar)
+    # Stable storage name managed by the platform.
     source: "data"
 
     # destination
-    # The mount point inside the container. This is where the host
-    # directory appears inside the running container.
-    # Maps to: appbinds.Destination (varchar)
+    # The mount point inside the container.
     destination: "/app/data"
 
     # permissions
@@ -633,18 +560,14 @@ volumes:
     # Possible values:
     #   rw — Read-write (most apps need this)
     #   ro — Read-only (for config files that shouldn't be modified)
-    # Maps to: appbinds.Permissions (varchar)
     permissions: "rw"
 
     # uid
     # The user ID that owns the mounted directory INSIDE THE CONTAINER.
     # This must match the UID your app runs as.
     #
-    # All Appbox apps run as UID 1000 inside the container, so this
-    # should always be 1000. The platform handles the host-side UID
-    # mapping via user namespaces automatically.
+    # This example runs as UID 1000.
     #
-    # Maps to: appbinds.UID (integer)
     uid: 1000
 
 
@@ -657,12 +580,8 @@ volumes:
 # directory into your container.
 #
 # HOW IT WORKS:
-#   Every app's `volumes` are stored on the host under the user's home
-#   directory:
-#     /cylostore/<disk>/<cylo_id>/home/apps/<app-domain>/<source>/
-#
-#   By mounting the parent directory, your app can access ALL other apps'
-#   shared data. Inside the container, the structure looks like:
+#   The platform mounts approved shared data at the requested destination.
+#   With the conventional destination, the app sees:
 #
 #   /APPBOX_DATA/
 #   │ 
@@ -688,40 +607,9 @@ volumes:
 #   - /APPBOX_DATA/storage is user general storage and may be used for
 #     user-managed files if your app needs that behavior.
 #
-# TEMPLATE VARIABLES:
-#   The `source` path uses template variables that the platform resolves
-#   at install time:
-#     %CYLO.DISK_NAME%  — the storage disk name (e.g. "sda", "disk3")
-#     %CYLO.ID%         — the user's Cylo ID
-#
-# Maps to: appbinds table (lock_to_bind_dir='host')
-#
 # Uptime Kuma doesn't need shared file system access, so this is empty.
-# See the examples below for apps that do.
+# The source is assigned during app review for apps that need this capability.
 shared_data: []
-
-# SHARED DATA EXAMPLES (not used by Uptime Kuma, shown for reference):
-#
-# Example 1: Media player accessing all app data (Plex, Jellyfin, etc.)
-#   shared_data:
-#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/"
-#       destination: "/APPBOX_DATA"
-#       permissions: "rw"
-#       uid: 1000
-#
-# Example 2: File manager or FTP server exposing the full home directory
-#   shared_data:
-#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/"
-#       destination: "/home/user"
-#       permissions: "rw"
-#       uid: 1000
-#
-# Example 3: Read-only access for an app that only needs to browse
-#   shared_data:
-#     - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/"
-#       destination: "/APPBOX_DATA"
-#       permissions: "ro"
-#       uid: 1000
 
 
 # =============================================================================
@@ -737,8 +625,8 @@ shared_data: []
 #   VIRTUAL_HOST    — The assigned domain for the app
 #   CALLBACK_TOKEN  — Auth token for the callback endpoint (if needed)
 #
-# Plus any custom field values are also injected as env vars, using the
-# field's `fname` (key name) as the variable name.
+# Custom field values are also injected as environment variables using their
+# manifest keys.
 #
 # VIRTUAL_PORT (web apps):
 #   If your app is a web app (is_web_app: true) and it listens on a port
@@ -748,7 +636,6 @@ shared_data: []
 #   never HTTPS, as the platform handles SSL termination.
 #   If your app listens on port 80, VIRTUAL_PORT is not needed (default).
 #
-# Maps to: appenvironmentvars table (app_id, Key, Value, template_type, version)
 #
 env:
 
@@ -759,11 +646,9 @@ env:
     template_type: none
 
   - # key — The environment variable name
-    # Maps to: appenvironmentvars.Key (varchar)
     key: UPTIME_KUMA_HOST
 
     # value — The value to set. Supports template variables.
-    # Maps to: appenvironmentvars.Value (text)
     value: "0.0.0.0"
 
     # template_type — How the value should be resolved by the template engine.
@@ -773,7 +658,6 @@ env:
     #   complexPassword — Same as password, but enforces complexity
     #   hidden          — Generate a random value if value is %RAND.N%, not shown to user
     #   instance        — Resolve %INSTANCE.*%, %CYLO.*%, %SERVER.*%, etc.
-    # Maps to: appenvironmentvars.template_type (varchar)
     template_type: none
 
   - key: UPTIME_KUMA_PORT
@@ -804,21 +688,16 @@ env:
 # Custom fields are shown as a form to the user during app installation.
 # Each field's value is:
 #   1. Validated on the client and server
-#   2. Stored in the customfieldvalue table
+#   2. Stored as installation configuration
 #   3. Injected as an environment variable (key = field name, e.g. USERNAME)
 #
-# The key for each field (e.g. "USERNAME") becomes both the `fname` in the
-# database and the environment variable name in the container.
-#
-# Maps to: customfields table (type='app', relid=app_id, fname, display_name,
-#          fieldtype, default_value, required, options, regex, template_type,
-#          minLength, maxLength, flex, sort_order, version)
+# The manifest key for each field (e.g. "USERNAME") becomes the environment
+# variable name in the container.
 #
 custom_fields:
 
   USERNAME:
     # label — Display name shown next to the input field
-    # Maps to: customfields.display_name (varchar)
     label: "Admin Username"
 
     # type — The input field type. Determines how the field is rendered
@@ -827,12 +706,14 @@ custom_fields:
     # Possible values:
     #   dynamicText      — Standard text input
     #   alphaNumeric     — Text input, alphanumeric characters only
-    #   password         — Password field (masked input, auto-generated if default is %RAND.N%)
+    #   password         — Masked password input. Set params.generatePassword:
+    #                       true to offer a generator while still submitting
+    #                       the value during installation.
     #   complexPassword  — Password with complexity requirements (uppercase, lowercase, number, special)
-    #   generatedPassword — Auto-generated password, hidden during install, shown as a masked
-    #                       password on the installed app page (with reveal/copy). Use with
-    #                       default_value: "%RAND.N%" for server-generated tokens or secrets
-    #                       that the user should not choose but may need to view later.
+    #   generatedPassword — Hidden platform-generated password. It is not
+    #                       rendered or submitted by the install form; the
+    #                       platform resolves and stores it. Use for generated
+    #                       credentials the user should not choose at install.
     #   number           — Numeric input
     #   email            — Email address input with validation
     #   date             — Date input
@@ -846,23 +727,19 @@ custom_fields:
     #   hidden           — Hidden field, not shown to the user (useful for auto-generated values)
     #   spacer           — Visual spacing element, not an actual input
     #
-    # Maps to: customfields.fieldtype (varchar)
     type: dynamicText
 
     # width — Grid width of the field (1–12, based on a 12-column grid).
     # 6 = half width, 12 = full width. Use to arrange fields side by side.
-    # Maps to: customfields.flex (integer)
     width: 6
 
     # default_value — Pre-filled value for the field.
     # For password/hidden types, use "%RAND.N%" to auto-generate a random
     # hex string of N characters.
-    # Maps to: customfields.default_value (text)
     default_value: "admin"
 
     # template_type — How this field's value is processed by the template engine.
     # Same options as env template_type.
-    # Maps to: customfields.template_type (varchar)
     # Default: none
     template_type: none
 
@@ -881,9 +758,6 @@ custom_fields:
     #   { maxLength: N }         — Maximum character length
     #   { matches: "regex" }     — Must match the regular expression
     #                               (set params.regex and params.errorText too)
-    #
-    # Maps to: customfields.required (integer), customfields.minLength (integer),
-    #          customfields.maxLength (integer), customfields.regex (text)
     validate:
       - required
       - alphanumeric
@@ -899,7 +773,11 @@ custom_fields:
     #   regex: "^[a-z]+$"        — Regular expression pattern
     #   errorText: "Message"     — Error message on validation failure
     #
-    # Maps to: customfields.options (text, JSON)
+    # For installed-page presentation:
+    #   showOnInstalled: false    — Keep the field available at install and in
+    #                               the container, but omit it from the installed
+    #                               app's Configuration card. Default: true.
+    #
     # Default: {} (empty object)
     params: {}
 
@@ -965,6 +843,73 @@ custom_fields:
 #       menuItems:
 #         "1": "Enabled"
 #         "0": "Disabled"
+#
+# Example: Conditional fields
+#   SSH_ENABLED:
+#     label: "Enable SSH/SFTP"
+#     type: switch
+#     width: 6
+#     default_value: "0"
+#     template_type: none
+#     validate: []
+#     params:
+#       menuItems:
+#         "1": "Enabled"
+#         "0": "Disabled"
+#
+#   SSH_AUTH_MODE:
+#     label: "SSH authentication"
+#     type: selector
+#     width: 6
+#     default_value: "key"
+#     template_type: none
+#     validate: []
+#     params:
+#       menuItems:
+#         key: "Public key"
+#         password: "Password"
+#     condition:
+#       field: SSH_ENABLED
+#       operator: equals
+#       value: "1"
+#       clear_when_hidden: true
+#
+#   SSH_PASSWORD:
+#     label: "SSH password"
+#     type: password
+#     width: 6
+#     default_value: ""
+#     template_type: password
+#     validate: []
+#     params: {}
+#     condition:
+#       field: SSH_AUTH_MODE
+#       operator: equals
+#       value: password
+#       clear_when_hidden: true
+#
+#   SSH_PUBLIC_KEY:
+#     label: "SSH public key"
+#     type: dynamicText
+#     width: 12
+#     default_value: ""
+#     template_type: none
+#     validate: []
+#     params: {}
+#     condition:
+#       field: SSH_AUTH_MODE
+#       operator: equals
+#       value: key
+#       clear_when_hidden: true
+#
+# Conditions use manifest keys, not labels. Supported operators are equals,
+# not_equals, in, not_in, truthy, and falsy. Use `value` for equality
+# operators and `values` for membership operators. The legacy `when` alias is
+# accepted, but new manifests should use `condition`.
+#
+# Defaults participate in visibility checks. Hidden fields are not validated
+# or submitted. Keep clear_when_hidden enabled for mutually exclusive secrets.
+# Conditions control presentation only; they are not an authorization boundary.
 #
 # Example: Email input
 #   ADMIN_EMAIL:
@@ -1039,6 +984,53 @@ custom_fields:
 
 
 # =============================================================================
+# Optional: Custom Tables, Custom Buttons, and Typed Operations
+# =============================================================================
+# Apps that manage structured records or expose explicit actions can declare:
+#
+#   custom_tables    — Per-installation structured records and row actions
+#   custom_buttons   — App-wide actions, optionally with an input form
+#   typed_operations — Fixed, schema-validated in-container manager contracts
+#
+# They are intentionally not active in this Uptime Kuma manifest because this
+# image does not contain a corresponding manager executable. Do not copy a
+# typed operation unless your image includes and tests the declared manager.
+#
+# Platform/container readiness only permits dispatch; Docker HEALTHCHECK is
+# optional and does not prove operation readiness or success. Each manager must
+# bound its operation-specific readiness check, verify authoritative
+# postconditions, and exit non-zero when it cannot establish success.
+# initial_rows_operation is part of install completion and must be idempotent
+# and convergent when retried after partial work.
+#
+# Custom Buttons may declare visibility_conditions against non-sensitive
+# installation custom_fields. All conditions use AND semantics; missing fields
+# fail closed. Supported operators are equals, not_equals, in, and not_in.
+# The set operators use a YAML list in value. Conditions are enforced by the
+# API immediately before execution as well as by frontend visibility:
+#
+# custom_buttons:
+#   - id: apply-public-key
+#     label: "Apply public key"
+#     admin_only: true
+#     visibility_conditions:
+#       - field: FEATURE_ENABLED
+#         operator: equals
+#         value: "1"
+#       - field: AUTH_MODE
+#         operator: in
+#         value: [key, certificate]
+#     operation: access-manager
+#
+# Buttons without visibility_conditions retain normal visibility. Do not use a
+# sensitive or undeclared field, and never treat frontend hiding as
+# authorization.
+#
+# See CUSTOM_TABLES.md for complete public examples, supported fields,
+# versioning guidance, security requirements, and a testing checklist.
+#
+#
+# =============================================================================
 # Section 11: advanced — Advanced Container Settings
 # =============================================================================
 # These settings map to additional Docker container configuration tables.
@@ -1048,7 +1040,6 @@ advanced:
 
   # devices — Host devices to expose inside the container.
   # Use for GPU passthrough, USB devices, etc.
-  # Maps to: appdevices table (type='app', relid=app_id, PathOnHost,
   #          PathInContainer, CgroupPermissions, version)
   #
   # Example:
@@ -1059,7 +1050,6 @@ advanced:
   devices: []
 
   # ulimits — Process resource limits inside the container.
-  # Maps to: appulimits table (type='app', relid=app_id, Name, Soft, Hard, version)
   #
   # Common ulimit names:
   #   nofile    — Max open files (increase for high-connection apps)
@@ -1075,7 +1065,6 @@ advanced:
   ulimits: []
 
   # sysctls — Kernel parameter overrides for the container's namespace.
-  # Maps to: appsysctl table (app_id, name, value, version)
   #
   # Example:
   #   sysctls:
@@ -1090,7 +1079,6 @@ advanced:
   # platform update. Do not rely on it. All apps must be fully
   # self-contained in a single container.
   #
-  # Maps to: appchains table (app_id, chained_to, version)
   chains: []
 
 

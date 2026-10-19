@@ -19,7 +19,7 @@ Before testing, ensure you have:
 The image must build cleanly with no errors.
 
 ```bash
-docker build -t my-app .
+docker build --platform linux/amd64 -t my-app .
 ```
 
 **Checklist:**
@@ -42,10 +42,11 @@ Simulates a brand new user installing the app for the first time. No prior data 
 docker volume create my-app-data
 
 # Run with required environment variables
-docker run --rm \
+docker run --rm --platform linux/amd64 \
   -e USERNAME=admin \
   -e PASSWORD='TestPass123!' \
   -e INSTANCE_ID=test-fresh \
+  -e SKIP_APPBOX_CALLBACK=1 \
   -v my-app-data:/app/data \
   -p 3001:3001 \
   my-app
@@ -56,13 +57,13 @@ Replace `/app/data` with your app's actual data path (from `appbox.yml` `volumes
 **Checklist:**
 
 - [ ] Container starts without errors
-- [ ] `set -x` output in logs shows the entrypoint executing
+- [ ] Logs contain no installation password, callback token, or other secret
 - [ ] `/etc/app_configured` is created (visible in logs via `touch`)
 - [ ] App starts in background, waits for readiness, then configures
 - [ ] Admin user is created with the provided USERNAME/PASSWORD
 - [ ] Admin user setup completes without errors
 - [ ] Background app is stopped cleanly
-- [ ] API callback is attempted (will fail locally — that's expected, check the `curl` command is correct in logs)
+- [ ] API callback is skipped for this ordinary local test
 - [ ] App starts as the main process after callback
 - [ ] App is accessible at `http://localhost:<port>`
 - [ ] You can log in with the credentials provided during install
@@ -85,10 +86,11 @@ Or if using `docker run --rm` (container removed on stop), simulate by running a
 
 ```bash
 # Initial run (without --rm)
-docker run -d --name my-app-test \
+docker run -d --platform linux/amd64 --name my-app-test \
   -e USERNAME=admin \
   -e PASSWORD='TestPass123!' \
   -e INSTANCE_ID=test-restart \
+  -e SKIP_APPBOX_CALLBACK=1 \
   -v my-app-data:/app/data \
   -p 3001:3001 \
   my-app
@@ -118,13 +120,14 @@ Simulates the platform deploying a new version of your app. The persistent volum
 docker stop my-app-test && docker rm my-app-test
 
 # Rebuild the image (simulating a new version)
-docker build -t my-app .
+docker build --platform linux/amd64 -t my-app .
 
 # Run with the SAME volume (data persists) but a new container
-docker run --rm \
+docker run --rm --platform linux/amd64 \
   -e USERNAME=admin \
   -e PASSWORD='TestPass123!' \
   -e INSTANCE_ID=test-upgrade \
+  -e SKIP_APPBOX_CALLBACK=1 \
   -v my-app-data:/app/data \
   -p 3001:3001 \
   my-app
@@ -224,6 +227,8 @@ docker exec my-app-test env | grep -E 'USERNAME|PASSWORD|INSTANCE_ID'
 - [ ] Password fields work with complex passwords (upper, lower, number, special char)
 - [ ] The app does not crash or misbehave with special characters in field values
 - [ ] Test with minimum valid input (only required fields)
+- [ ] Fields with `params.showOnInstalled: false` are absent from the installed app's Configuration card
+- [ ] Empty custom-field values do not leave blank rows in the installed app's Configuration card
 
 ---
 
@@ -239,10 +244,11 @@ Ensure data survives container replacement.
 docker stop my-app-test && docker rm my-app-test
 
 # 3. Start a new container with the same volume
-docker run -d --name my-app-test2 \
+docker run -d --platform linux/amd64 --name my-app-test2 \
   -e USERNAME=admin \
   -e PASSWORD='TestPass123!' \
   -e INSTANCE_ID=test-persist \
+  -e SKIP_APPBOX_CALLBACK=1 \
   -v my-app-data:/app/data \
   -p 3001:3001 \
   my-app
@@ -366,16 +372,130 @@ docker exec my-app /moduser.sh
 
 ---
 
+## 14. Custom Tables, Buttons, and Typed Operations (if used)
+
+Complete these tests when the manifest uses any feature documented in
+`CUSTOM_TABLES.md`.
+
+**Manifest and installation:**
+
+- [ ] Table, field, button, row-action, and operation IDs are stable and unique
+- [ ] Every action references an operation declared for this app version
+- [ ] Every manager executable exists and is executable in the released image
+- [ ] Operation schemas reject unknown fields and invalid values
+- [ ] Initial rows resolve installation fields and are not duplicated
+- [ ] `initial_rows_operation`, if declared, dispatches once per seeded row
+      before installation completes
+- [ ] `initial_rows_operation` remains part of install completion and retries
+      after partial work converge without duplicate side effects
+- [ ] Retried callbacks reuse the lifecycle execution identity without exposing
+      sensitive row values in logs or identifiers
+- [ ] Tables without `initial_rows_operation` seed rows without dispatching an
+      internal container operation
+- [ ] Installation succeeds when optional initial values are omitted
+
+**User-visible behavior:**
+
+- [ ] Row limits and add/edit/delete flags are enforced
+- [ ] Non-editable identity fields cannot be changed
+- [ ] Administrator-only tables and buttons reject non-administrators
+- [ ] Sensitive values are masked in ordinary views
+- [ ] Reveal requires authorization
+- [ ] Editing without replacing a masked secret preserves the original value
+- [ ] Row actions use values from the selected row, not another row
+- [ ] Confirmation phrases require an exact match
+- [ ] Custom Button forms submit the expected value types
+- [ ] Buttons without `visibility_conditions` remain visible and executable
+- [ ] Every Custom Button condition must match before the button is returned
+      or executable
+- [ ] `equals`, `not_equals`, `in`, and `not_in` are tested; set operators use
+      a YAML list in `value`
+- [ ] Missing controlling fields fail closed for all operators, including
+      `not_equals` and `not_in`
+- [ ] Import rejects unknown and sensitive installation-field references
+- [ ] Direct invocation of a hidden button is rejected by the API
+- [ ] Matching button responses expose normalized `visibilityConditions`
+- [ ] Success and failure states are understandable without command output
+
+**Manager safety and reliability:**
+
+- [ ] Manager reads one bounded JSON document from stdin
+- [ ] Manager rejects malformed JSON, unknown operations, and unknown fields
+- [ ] Identifiers and paths are validated again inside the manager
+- [ ] No user value is interpolated into shell text
+- [ ] Secrets do not appear in logs, process arguments, stdout, stderr, or errors
+- [ ] Platform/container readiness permits dispatch only; it is not treated as
+      operation readiness or success
+- [ ] Managers use bounded, operation-specific checks for each required API,
+      database, socket, or resource
+- [ ] Tests do not require Docker `HEALTHCHECK` or treat container health as
+      proof of operation readiness or success
+- [ ] Managers verify authoritative postconditions and return non-zero when
+      readiness, execution, or verification cannot be established
+- [ ] Repeating an operation safely reconciles state
+- [ ] Conflicting operations are serialized
+- [ ] Timeout and non-zero exit behavior are tested
+
+**Upgrade:**
+
+- [ ] Existing rows and secrets remain available after an app-version upgrade
+- [ ] Stable `type_of`, field IDs, button IDs, and operation IDs still map
+- [ ] Newly declared initial rows are not expected to appear during upgrade
+- [ ] The upgraded immutable image contains the matching manager contract
+
+---
+
+## 15. Conditional Installation Fields (if used)
+
+- [ ] Fields without a `condition` remain visible
+- [ ] `equals` and `not_equals` use the controlling field's manifest key
+- [ ] `in` and `not_in` use a `values` array
+- [ ] `truthy` and `falsy` work without a comparison value
+- [ ] Controlling-field defaults affect initial visibility
+- [ ] Nested defaults reveal the correct dependent field immediately
+- [ ] Changing a controlling value updates dependent fields
+- [ ] Hidden fields are excluded from validation and submission
+- [ ] `clear_when_hidden: true` removes inactive passwords, keys, and tokens
+- [ ] Re-enabling a cleared field does not restore its previous secret
+- [ ] Server or manager validation does not trust visibility as authorization
+
+---
+
+## 16. Sensitive Installation Field Reveal Policy
+
+- [ ] Sensitive fields are masked in ordinary instance responses
+- [ ] Sensitive fields without `revealable: true` do not render a reveal action
+- [ ] Their reveal endpoint returns 403 even to an authorized owner
+- [ ] A field with both `sensitive: true` and `revealable: true` can be revealed
+      only by a user authorized for that installed instance
+- [ ] `revealable: true` without `sensitive: true` is rejected during import
+- [ ] Reveal values do not appear in logs, bulk responses, or error messages
+
+---
+
+## 17. Installed Instance Templates and Conditions
+
+- [ ] `template_type: instance` resolves system placeholders and then
+      `%FIELD_NAME%` references from the same installed instance
+- [ ] Unknown field references remain literal instead of becoming empty
+- [ ] Sensitive source values do not expand into non-sensitive destinations
+- [ ] Sensitive-to-sensitive expansion remains masked in ordinary responses
+- [ ] Installed Configuration hides fields whose `condition` does not match
+- [ ] Missing controlling fields fail closed
+
+---
+
 ## Quick Reference: Test Commands
 
 ```bash
 # Build
-docker build -t my-app .
+docker build --platform linux/amd64 -t my-app .
 
 # Fresh install
 docker volume create my-app-data
-docker run -d --name my-app-test \
+docker run -d --platform linux/amd64 --name my-app-test \
   -e USERNAME=admin -e PASSWORD='TestPass123!' -e INSTANCE_ID=test \
+  -e SKIP_APPBOX_CALLBACK=1 \
   -v my-app-data:/app/data -p 3001:3001 my-app
 
 # Check logs
@@ -392,9 +512,10 @@ docker restart my-app-test
 
 # Upgrade test
 docker stop my-app-test && docker rm my-app-test
-docker build -t my-app .
-docker run -d --name my-app-test \
+docker build --platform linux/amd64 -t my-app .
+docker run -d --platform linux/amd64 --name my-app-test \
   -e USERNAME=admin -e PASSWORD='TestPass123!' -e INSTANCE_ID=test \
+  -e SKIP_APPBOX_CALLBACK=1 \
   -v my-app-data:/app/data -p 3001:3001 my-app
 
 # Password change test

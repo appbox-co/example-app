@@ -52,9 +52,10 @@
 # =============================================================================
 
 # Enable debug output so all commands are logged to the container logs.
-# This is invaluable for debugging installation issues. Remove in production
-# if logs are too verbose.
-set -x
+# Avoid unconditional `set -x`: expanded commands can expose installation
+# passwords and callback tokens. Enable targeted tracing only around code that
+# cannot process secrets.
+set -e
 
 # =============================================================================
 # Constants
@@ -186,7 +187,7 @@ socket.on('connect_error', (err) => {
 #
 # CALLBACK_REQUIRES_AUTH:
 #   If `callback_requires_auth` is true in appbox.yml, include the
-#   CALLBACK_TOKEN as a Bearer token.
+#   CALLBACK_TOKEN in the X-Cylo-Callback-Token header.
 #
 # SETTING CUSTOM FIELD VALUES (externalURL only):
 #   The callback can also pass clickable links back to the platform by
@@ -214,7 +215,7 @@ callback_installed() {
     )
 
     if [[ -n "${CALLBACK_TOKEN:-}" ]]; then
-        headers+=(-H "Authorization: Bearer ${CALLBACK_TOKEN}")
+        headers+=(-H "X-Cylo-Callback-Token: ${CALLBACK_TOKEN}")
     fi
 
     until curl -fsS -o /dev/null "${headers[@]}" -X POST "${callback_url}"; do

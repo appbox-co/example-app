@@ -1,6 +1,6 @@
 # Appbox Example App — Uptime Kuma
 
-This repository is a comprehensive example of how to package an app for the Appbox platform. It uses [Uptime Kuma](https://github.com/louislam/uptime-kuma) (a self-hosted monitoring tool) as the base, demonstrating every configuration option, the entrypoint lifecycle, and best practices.
+This repository is a reference for packaging an app for the Appbox platform. It uses [Uptime Kuma](https://github.com/louislam/uptime-kuma) to demonstrate the core manifest, entrypoint lifecycle, automated initial administrator setup, and packaging best practices. Optional Custom Tables, Custom Buttons, and typed operations are documented separately because Uptime Kuma does not need them.
 
 Use this as a template and reference when creating your own Appbox app.
 
@@ -22,6 +22,7 @@ Use this as a template and reference when creating your own Appbox app.
   - [shared_data — Shared File System Access](#shared_data--shared-file-system-access)
   - [env — Environment Variables](#env--environment-variables)
   - [custom_fields — User Input](#custom_fields--user-input)
+  - [Custom Tables, Buttons, and Typed Operations](#custom-tables-buttons-and-typed-operations)
   - [advanced — Advanced Settings](#advanced--advanced-settings)
 - [Custom Field Types](#custom-field-types)
 - [Custom Field Validation Rules](#custom-field-validation-rules)
@@ -63,24 +64,26 @@ Use this as a template and reference when creating your own Appbox app.
 
 ```
 example-app/
-├── AGENTS.md        # Instructions for AI coding agents
+├── AGENTS-README.md # Instructions for AI coding agents
 ├── appbox.yml       # App configuration (metadata, ports, volumes, env, fields, etc.)
 ├── Dockerfile       # Container image definition
 ├── entrypoint.sh    # Lifecycle script (setup, upgrade, callback)
 ├── icon.png         # App icon (512x512 PNG) for the store listing
 ├── moduser.sh       # Password change script (required for all apps)
 ├── README.md        # This documentation
+├── CUSTOM_TABLES.md # Optional Custom Tables, Buttons, and action guide
 └── TESTING.md       # Testing framework for pre-submission validation
 ```
 
 | File | Purpose |
 |------|---------|
-| `AGENTS.md` | Instructions for AI coding agents working on Appbox apps. Covers constraints, patterns, and the human review policy. |
+| `AGENTS-README.md` | Instructions for AI coding agents working on Appbox apps. Covers constraints, patterns, and the human review policy. |
 | `appbox.yml` | Single source of truth for all app configuration. The platform reads this to create database records for the app. |
 | `Dockerfile` | Wraps the upstream image with the Appbox entrypoint, installing required tools (bash, curl, gosu). |
 | `entrypoint.sh` | Handles first-run setup (creating admin user), upgrade detection, platform callback, and privilege dropping. |
 | `icon.png` | 512x512 PNG icon displayed in the app store. Uploaded to the platform's image server during registration. |
 | `moduser.sh` | Password change script. Allows users to change the default user's password if locked out. Required for all apps. |
+| `CUSTOM_TABLES.md` | Public app-author guide for optional Custom Tables, Custom Buttons, row actions, and typed operations. |
 | `TESTING.md` | Testing framework with checklists for all test scenarios. Complete before submitting. |
 
 ---
@@ -91,7 +94,7 @@ The `appbox.yml` file is organized into sections. Only `app` and `image` are req
 
 ### app — Store Metadata
 
-Controls how your app appears in the Appbox app store. Maps to the `apps` database table.
+Controls how your app appears in the Appbox app store.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -103,10 +106,11 @@ Controls how your app appears in the Appbox app store. Maps to the `apps` databa
 | `categories` | list | No | `[]` | Category names for store filtering. See [Available Categories](#available-categories). |
 | `devsite` | string | No | `null` | Developer website URL. Shown as "Visit developer" link. |
 | `source_repo` | string | No | `null` | Source code repository URL. |
+| `documentation_url` | string | No | `null` | App setup or usage documentation URL. |
 
 ### image — Docker Image
 
-Defines the Docker image to pull. Maps to `apps` and `app_versions` tables.
+Defines the Docker image to pull.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -116,7 +120,7 @@ Defines the Docker image to pull. Maps to `apps` and `app_versions` tables.
 
 ### container — Runtime Configuration
 
-Docker container settings. All optional. Maps to `apps` table.
+Docker container settings. All optional.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -135,7 +139,7 @@ Docker container settings. All optional. Maps to `apps` table.
 
 ### networking — Domain and SSL
 
-Controls domain assignment and reverse proxy behavior. Maps to `apps` table.
+Controls domain assignment and reverse proxy behavior.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -148,7 +152,7 @@ Controls domain assignment and reverse proxy behavior. Maps to `apps` table.
 
 ### behavior — Platform Behavior
 
-Controls the app's lifecycle on the platform. Maps to `apps` table.
+Controls the app's lifecycle on the platform.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -163,7 +167,7 @@ Controls the app's lifecycle on the platform. Maps to `apps` table.
 
 ### install — Install Descriptions
 
-Text shown during installation. Maps to `apps` table.
+Text shown during installation.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -190,43 +194,40 @@ ports:
     dynamic: 0
 ```
 
-Maps to `apps` table: `TCPPortRange`, `UDPPortRange`, `CombinedPortRange`, `TCPDynamicPorts`, `UDPDynamicPorts`, `CombinedDynamicPorts`.
-
 ### volumes — Persistent Bind Mounts
 
-Directories persisted across restarts and upgrades. Maps to `appbinds` table.
+Directories persisted across restarts and upgrades.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `source` | string | Yes | Host directory name (relative to `/apps/<domain>/`) |
+| `source` | string | Yes | Stable storage name for this app |
 | `destination` | string | Yes | Mount point inside the container |
 | `permissions` | string | Yes | `rw` (read-write) or `ro` (read-only) |
 | `uid` | integer | Yes | Owner UID inside the container. Always `1000` (see note below) |
 
-> **UID explained**: The `uid` field should always be `1000`, matching the UID your app runs as inside the container. The platform handles host-side UID remapping via user namespaces automatically — you do not need to worry about host UIDs.
+> **UID explained**: The `uid` field should normally be `1000`, matching the
+> user your app runs as inside the container. The platform provisions and owns
+> the persistent storage.
 
 ### shared_data — Shared File System Access
 
-Mounts the user's shared home directory into the container so the app can access data from other installed apps. Maps to `appbinds` table. See [Shared File System](#shared-file-system) for full details.
+Mounts the user's shared data into the container so the app can access data
+from other installed apps. See [Shared File System](#shared-file-system).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `source` | string | Yes | Absolute host path using template variables (e.g. `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/`) |
+| `source` | string | Yes | Platform-provided shared-data source template |
 | `destination` | string | Yes | Mount point inside the container (e.g. `/APPBOX_DATA`) |
 | `permissions` | string | Yes | `rw` (read-write) or `ro` (read-only) |
 | `uid` | integer | Yes | Owner UID inside the container. Always `1000` |
 
-```yaml
-shared_data:
-  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/"
-    destination: "/APPBOX_DATA"
-    permissions: "rw"
-    uid: 1000
-```
+The shared-data source is assigned during app review. Declare the intended
+container destination, access mode, and use case in the submission; do not
+guess or hard-code a host path.
 
 ### env — Environment Variables
 
-Variables injected into the container. Maps to `appenvironmentvars` table.
+Variables injected into the container.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -240,7 +241,9 @@ The platform also auto-injects: `INSTANCE_ID`, `VIRTUAL_HOST`, `CALLBACK_TOKEN`.
 
 ### custom_fields — User Input
 
-Form fields shown during installation. Maps to `customfields` table. See [Custom Field Types](#custom-field-types) and [Custom Field Validation Rules](#custom-field-validation-rules).
+Form fields shown during installation. See
+[Custom Field Types](#custom-field-types) and
+[Custom Field Validation Rules](#custom-field-validation-rules).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -251,6 +254,169 @@ Form fields shown during installation. Maps to `customfields` table. See [Custom
 | `template_type` | string | No | Template resolution: `none`, `password`, `complexPassword`, `hidden` |
 | `validate` | list | No | Validation rules (see below) |
 | `params` | object | No | Type-specific parameters |
+| `condition` | object | No | Show this field only when another installation field matches a condition |
+| `sensitive` | boolean | No | Mask the stored value in ordinary API responses and the frontend |
+| `revealable` | boolean | No | Allow an authorized instance owner to fetch a sensitive value through the per-field reveal endpoint; requires `sensitive: true` |
+
+Custom fields are shown in the installed app's Configuration card by default.
+Set `params.showOnInstalled: false` for installation controls or intermediate
+values that are not useful after setup. The field is still collected, stored,
+and injected into the container; only its installed-page presentation changes.
+Prefer keeping derived connection strings and credentials the owner needs, and
+hiding component values already represented by those fields.
+
+```yaml
+custom_fields:
+  INITIAL_PATH:
+    label: "Initial path"
+    type: dynamicText
+    default_value: data
+    params:
+      showOnInstalled: false
+```
+
+Sensitive fields are masked by default. Set `revealable: true` only for
+credentials the instance owner must recover, such as a generated client
+password:
+
+```yaml
+custom_fields:
+  CLIENT_PASSWORD:
+    label: "Client password"
+    type: generatedPassword
+    default_value: "%RAND.32%"
+    template_type: password
+    sensitive: true
+    revealable: true
+```
+
+For newly imported manifests, omit `revealable` or set it to `false` for
+write-only credentials, and set it to `true` for credentials the owner must
+recover. Legacy sensitive fields with no stored policy remain owner-revealable.
+Reveal access always requires authorization to the installed app instance.
+
+An installed `template_type: instance` field may reference another installation
+field by manifest key:
+
+```yaml
+custom_fields:
+  CLIENT_USER:
+    label: "Client user"
+    type: staticText
+    default_value: appbox
+    template_type: none
+  SSH_COMMAND:
+    label: "SSH command"
+    type: staticText
+    default_value: "ssh %CLIENT_USER%@%DOMAIN.DOMAIN% -p%PORTS|0.EXTERNAL%"
+    template_type: instance
+```
+
+System placeholders are resolved first, then `%FIELD_NAME%` references are
+resolved from the same installed instance. Unknown references remain literal.
+A sensitive source field is never expanded into a non-sensitive destination;
+the destination must also declare `sensitive: true`.
+
+#### Conditional Custom Fields
+
+Use `condition` to show an installation field only when another field has a
+matching value. This is useful for optional features and mutually exclusive
+authentication methods.
+
+```yaml
+custom_fields:
+  SSH_ENABLED:
+    label: "Enable SSH/SFTP"
+    type: switch
+    default_value: "0"
+    params:
+      menuItems:
+        "1": "Enabled"
+        "0": "Disabled"
+
+  SSH_AUTH_MODE:
+    label: "SSH authentication"
+    type: selector
+    default_value: "key"
+    params:
+      menuItems:
+        key: "Public key"
+        password: "Password"
+    condition:
+      field: SSH_ENABLED
+      operator: equals
+      value: "1"
+      clear_when_hidden: true
+
+  SSH_PASSWORD:
+    label: "SSH password"
+    type: password
+    condition:
+      field: SSH_AUTH_MODE
+      operator: equals
+      value: password
+      clear_when_hidden: true
+
+  SSH_PUBLIC_KEY:
+    label: "SSH public key"
+    type: dynamicText
+    condition:
+      field: SSH_AUTH_MODE
+      operator: equals
+      value: key
+      clear_when_hidden: true
+```
+
+| Property | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `field` | Yes | — | Manifest key of the controlling field |
+| `operator` | No | `equals` | Comparison operator |
+| `value` | For `equals` and `not_equals` | — | Single expected value |
+| `values` | For `in` and `not_in` | — | Array of expected values |
+| `clear_when_hidden` | No | `true` | Remove a hidden field's current value before validation and submission |
+
+Supported operators are `equals`, `not_equals`, `in`, `not_in`, `truthy`, and
+`falsy`. The legacy key `when` is accepted as an alias, but new manifests
+should use `condition`.
+
+Conditions use manifest field keys, not labels. Defaults participate in
+condition evaluation, so the selector default of `key` above reveals the public
+key field immediately after SSH is enabled. Comparisons normalize scalar values
+to strings; quote switch values such as `"1"` and `"0"` for clarity.
+
+Hidden fields are not validated or submitted. Keep
+`clear_when_hidden: true` for passwords, private keys, tokens, and other
+mutually exclusive values so switching modes cannot retain an inactive secret.
+Conditional visibility is a UI feature, not an authorization boundary; always
+validate submitted values and permissions in the app or its manager.
+
+### Custom Tables, Buttons, and Typed Operations
+
+Apps that manage structured records or need explicit actions can additionally
+declare:
+
+| Section | Purpose |
+|---------|---------|
+| `custom_tables` | Per-installation structured records with optional row actions |
+| `custom_buttons` | App-wide actions with optional input and confirmation |
+| `typed_operations` | Fixed, schema-validated manager contracts included in the app image |
+
+These sections are optional and are not active in this Uptime Kuma manifest.
+See [CUSTOM_TABLES.md](CUSTOM_TABLES.md) for complete public examples, manager
+requirements, sensitive-value behavior, versioning rules, and tests.
+
+Custom Buttons may use `visibility_conditions` against declared,
+non-sensitive installation fields. All conditions must match, missing fields
+fail closed, and the API enforces them again at execution time. See
+[Custom Buttons](CUSTOM_TABLES.md#custom-buttons) for the schema and supported
+operators.
+
+Platform/container readiness only permits typed-operation dispatch. Managers
+must use bounded, operation-specific readiness checks and verify authoritative
+postconditions, returning non-zero when either cannot be established. Docker
+`HEALTHCHECK` is optional and does not prove operation readiness or success.
+An `initial_rows_operation` is part of install completion and must safely
+converge when retried after partial work.
 
 ### advanced — Advanced Settings
 
@@ -271,8 +437,9 @@ Rarely needed container configuration.
 |------|-----------|-------|----------|
 | `dynamicText` | Standard text input | User-entered string | Usernames, site names, general text |
 | `alphaNumeric` | Text input (alphanumeric only) | Letters and numbers | Identifiers, slugs |
-| `password` | Masked password input | User-entered or auto-generated (`%RAND.N%`) | Passwords |
+| `password` | Masked password input | User-entered; set `params.generatePassword: true` to offer a generator while still submitting the value | Passwords chosen during installation |
 | `complexPassword` | Masked input with complexity enforcement | Must include upper, lower, number, special char | Admin passwords |
+| `generatedPassword` | Hidden platform-generated value; not rendered or submitted by the install form, but resolved and stored by the platform | Platform-generated string | Internal or revealable generated credentials that should not be chosen during installation |
 | `number` | Numeric input | Integer or float | Port numbers, limits, sizes |
 | `email` | Email input with validation | Valid email address | Admin email, notification address |
 | `date` | Date input | Date string | Expiry dates, schedules |
@@ -547,21 +714,18 @@ The `range` field accepts:
 
 ## Volume Bind Mounts
 
-All volume bind mounts store data under the user's app directory at `/apps/<app-domain>/<source>`. The platform handles the host-side directory creation and ownership automatically.
+All volume bind mounts are provisioned and persisted by the platform. App
+authors choose the storage name and the container-visible destination.
 
 **File ownership inside the container**: All data directories must be owned by UID 1000:GID 1000 inside the container. If the upstream image creates data directories owned by a different user, add a `chown -R 1000:1000 /path` step in your Dockerfile or entrypoint.
 
-Always set `uid: 1000` in your volume definitions. The platform handles host-side UID remapping via user namespaces automatically.
+Set `uid: 1000` when the app runs as UID 1000.
 
 ### Shared storage
 
-Volumes defined in `appbox.yml` are stored in the **shared** home area:
-
-```
-/cylostore/<disk>/<cylo_id>/home/apps/<app-domain>/<source>/
-```
-
-This means other apps on the same account **can** access your app's data if they have the shared file system mounted (see [Shared File System](#shared-file-system) below). This is by design — it enables cross-app workflows like torrent clients sharing downloads with media players.
+Other apps on the same account can access an app's shared data only when they
+are explicitly configured with shared-data access. This enables workflows such
+as a media player reading files produced by a download client.
 
 ---
 
@@ -571,27 +735,9 @@ Apps on the Appbox platform can access each other's data through a shared file s
 
 ### How it works
 
-Every app's `volumes` (the `home` storage) are stored on the host at:
-
-```
-/cylostore/<disk>/<cylo_id>/home/
-│ 
-├── apps/
-│   ├── plex.user-domain.com/
-│   │   └── config/
-│   ├── rtorrent.user-domain.com/
-│   │   └── downloads/
-│   ├── jellyfin.user-domain.com/
-│   │   ├── config/
-│   │   └── cache/
-│   ├── openclaw.user-domain.com/
-│   │   └── data/
-│   └── ...
-└── storage/
-    └── ...
-```
-
-When an app needs access to other apps' data, it mounts this `home/` tree into the container. Inside the container, the app sees:
+When an app needs access to shared data, declare `shared_data` and choose a
+container-visible destination. For the conventional `/APPBOX_DATA`
+destination, the app sees:
 
 ```
 /APPBOX_DATA/
@@ -631,21 +777,12 @@ When an app needs access to other apps' data, it mounts this `home/` tree into t
 
 ### Configuring shared access in appbox.yml
 
-Use the `shared_data` section in `appbox.yml` to mount the shared file system. The `source` uses template variables that the platform resolves at install time:
+Use the `shared_data` section in `appbox.yml`. The source is the documented
+platform shared-data template:
 
-```yaml
-shared_data:
-  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/apps/"
-    destination: "/APPBOX_DATA"
-    permissions: "rw"
-    uid: 1000
-```
-
-The source path typically points to:
-
-| Path | Contents |
-|------|----------|
-| `/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/` | The full home directory |
+The shared-data source is assigned during app review. Declare the intended
+container destination, access mode, and use case in the submission; do not
+guess or hard-code a host path.
 
 The `destination` is where the shared data appears inside the container. By convention, `/APPBOX_DATA` is used, but you can choose any path that suits your app (e.g. `/media`, `/storage`, `/home/user/data`).
 
@@ -833,7 +970,7 @@ Content-Type: application/json
 If `behavior.callback_requires_auth` is `true`, also include:
 
 ```
-Authorization: Bearer ${CALLBACK_TOKEN}
+X-Cylo-Callback-Token: ${CALLBACK_TOKEN}
 ```
 
 **Behavior:**
@@ -889,6 +1026,7 @@ curl -s -o /dev/null -w "%{http_code}" \
   -X POST "https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
+  -H "X-Cylo-Callback-Token: ${CALLBACK_TOKEN}" \
   -d "{\"custom_fields\": [{\"key\": \"ADMIN_PANEL\", \"value\": \"${ADMIN_URL}\"}]}"
 ```
 
@@ -1070,8 +1208,8 @@ When creating an Appbox app, ensure:
 
 7. **Test locally** — Build and run the container:
    ```bash
-   docker build -t my-app .
-   docker run -e USERNAME=admin -e PASSWORD='TestPass123!' \
+   docker build --platform linux/amd64 -t my-app .
+   docker run --platform linux/amd64 -e USERNAME=admin -e PASSWORD='TestPass123!' \
      -e INSTANCE_ID=test -e SKIP_APPBOX_CALLBACK=1 \
      -p 3001:3001 my-app
    ```

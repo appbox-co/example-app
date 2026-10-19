@@ -96,7 +96,7 @@ ADD entrypoint.sh /entrypoint.sh
 # ADD PASSWORD CHANGE SCRIPT
 # All Appbox apps MUST include moduser.sh at the container root.
 # This allows users to recover access if they are locked out.
-# Usage: docker exec <container> /moduser.sh <current_password> <new_password>
+# Usage: docker exec <container> /moduser.sh <new_password>
 ADD moduser.sh /moduser.sh
 RUN chmod +x /moduser.sh
 
