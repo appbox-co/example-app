@@ -816,7 +816,7 @@ entrypoint.sh (one-time setup)
 | Crash recovery | Container restarts | s6 restarts the crashed service |
 | Graceful shutdown | Docker SIGTERM to PID 1 | s6 propagates SIGTERM to all services |
 | User switching | `exec gosu 1000:1000 "$@"` | Each service `run` script uses `gosu` or `s6-setuidgid` |
-| Callback timing | Before `exec` (synchronous) | Background subshell after `exec /init` (async) |
+| Callback timing | Background job started just before `exec`; never delays the app | Background subshell or s6 longrun; never delays `/init` or cont-init |
 
 ### s6 service dependency ordering
 
@@ -863,14 +863,15 @@ if [[ ! -f /etc/app_configured ]]; then
     (
         set +e   # prevent set -e from killing subshell on timeout
         wait_for_http "http://localhost:8080/api/health" 300 2
-        # ... admin creation, callback ...
+        # ... admin creation ...
+        /usr/local/bin/appbox-installed-callback   # see "API Callback"
     ) &
 fi
 
 exec "$@"   # becomes: exec /init
 ```
 
-**Warning:** `set -e` propagates into `( ... ) &` subshells. If `wait_for_http` times out (returns 1), `set -e` kills the subshell before `callback_installed` runs, leaving the app stuck in "installing" state forever. Always use `set +e` at the top of the subshell.
+**Warning:** `set -e` propagates into `( ... ) &` subshells. If `wait_for_http` times out (returns 1), `set -e` kills the subshell before the callback is sent, leaving the app stuck in "installing" state forever. Always use `set +e` at the top of the subshell.
 
 ---
 
@@ -915,8 +916,8 @@ The entrypoint script detects three container states based on two signals:
        └──────────┬──────┘ └──┬─────┘  │
                   │            │        │
               ┌───▼────────────▼───┐    │
-              │   API Callback     │    │
-              │   (retry loop)     │    │
+              │ Start API callback │    │
+              │ in the background  │    │
               └────────┬───────────┘    │
                        │                │
               ┌────────▼────────────────▼──┐
@@ -927,21 +928,19 @@ The entrypoint script detects three container states based on two signals:
 
 ### Fresh install
 
-1. Mark container as configured (`/etc/app_configured`)
+1. Mark the platform API callback as pending (`/etc/appbox_callback_pending`), then the container as configured (`/etc/app_configured`)
 2. App started in background
 3. Wait for app to be ready (poll HTTP)
 4. Create admin user via app's setup API
 5. Stop the background app
-6. Call platform API callback
-7. Start app with `exec` as PID 1
+6. Start the callback in the background, then start app with `exec` as PID 1
 
 ### Upgrade
 
-1. Mark container as configured
+1. Mark the platform API callback as pending, then the container as configured
 2. Skip user creation (data exists)
 3. Optional: run migration steps
-4. Call platform API callback
-5. Start app with `exec` as PID 1
+4. Start the callback in the background, then start app with `exec` as PID 1
 
 ### Restart
 
@@ -974,9 +973,9 @@ X-Cylo-Callback-Token: ${CALLBACK_TOKEN}
 ```
 
 **Behavior:**
-- `INSTANCE_ID` is injected as an environment variable
-- The script retries every 5 seconds until HTTP 200
-- The callback is idempotent (safe to call multiple times)
+- `INSTANCE_ID` is injected as an environment variable. It may include `?callback_token=...`, so treat it and `CALLBACK_TOKEN` as secrets: never echo them or trace them with `set -x`
+- The API accepts one installed callback per install or update. Later calls are rejected (401 once the token has been used, or an error when the instance is not waiting), so the callback is **not** idempotent and a rejected callback must not be retried
+- Send it with the bundled `appbox-installed-callback` helper, in the background, so it never blocks `exec`, cont-init or `/init`. The helper retries network errors, 408, 429 and 5xx with backoff and stops on any other status
 - Without the callback, the user sees the app as "installing" indefinitely
 
 ### externalURL Fields
@@ -1022,12 +1021,9 @@ custom_fields:
 ```bash
 ADMIN_URL="https://${DOMAIN}:${ADMIN_PORT}/admin"
 
-curl -s -o /dev/null -w "%{http_code}" \
-  -X POST "https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -H "X-Cylo-Callback-Token: ${CALLBACK_TOKEN}" \
-  -d "{\"custom_fields\": [{\"key\": \"ADMIN_PANEL\", \"value\": \"${ADMIN_URL}\"}]}"
+# Inside the background callback job, not in front of `exec`:
+/usr/local/bin/appbox-installed-callback \
+  "{\"custom_fields\": [{\"key\": \"ADMIN_PANEL\", \"value\": \"${ADMIN_URL}\"}]}"
 ```
 
 **Rules:**

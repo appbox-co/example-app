@@ -63,8 +63,8 @@ Replace `/app/data` with your app's actual data path (from `appbox.yml` `volumes
 - [ ] Admin user is created with the provided USERNAME/PASSWORD
 - [ ] Admin user setup completes without errors
 - [ ] Background app is stopped cleanly
-- [ ] API callback is skipped for this ordinary local test
-- [ ] App starts as the main process after callback
+- [ ] Callback is sent in the background (with `SKIP_APPBOX_CALLBACK=1` the log shows `[appbox-callback] skipped`)
+- [ ] App starts as the main process without waiting for the callback
 - [ ] App is accessible at `http://localhost:<port>`
 - [ ] You can log in with the credentials provided during install
 
@@ -104,7 +104,7 @@ docker restart my-app-test
 - [ ] Container restarts without errors
 - [ ] Entrypoint skips ALL setup (the `if [[ ! -f /etc/app_configured ]]` block is not entered)
 - [ ] No duplicate admin user creation attempted
-- [ ] No API callback attempted
+- [ ] No API callback attempted (`/etc/appbox_callback_pending` is absent)
 - [ ] App goes straight to `exec gosu 1000:1000 "$@"`
 - [ ] App is accessible and working
 - [ ] Previous data and login credentials still work
@@ -139,8 +139,8 @@ docker run --rm --platform linux/amd64 \
 - [ ] Entrypoint detects existing data and enters the UPGRADE path
 - [ ] Admin user creation is SKIPPED (data already exists)
 - [ ] Upgrade-specific steps run if applicable (migrations, etc.)
-- [ ] API callback is attempted
-- [ ] App starts as the main process
+- [ ] API callback is sent in the background
+- [ ] App starts as the main process without waiting for the callback
 - [ ] App is accessible and working
 - [ ] ALL previous data is preserved (accounts, settings, content)
 - [ ] Login still works with original credentials
@@ -356,6 +356,7 @@ docker exec my-app /moduser.sh
 - [ ] All volume `uid` fields are `1000`
 - [ ] `custom_fields` have appropriate validation rules
 - [ ] `behavior.expect_callback` is `true` if the entrypoint does a callback
+- [ ] The callback never runs in front of `exec`, in cont-init or in an s6 oneshot, and `tests/test-installed-callback.sh` passes
 - [ ] No platform-managed fields are included (they will be ignored)
 - [ ] Template variables use ALL CAPS field names (e.g. `%INSTANCE.ID%`)
 

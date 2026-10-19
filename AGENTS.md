@@ -24,10 +24,13 @@ example-app/
 ├── appbox.yml       # App configuration (metadata, ports, volumes, env, fields)
 ├── Dockerfile       # Container image definition
 ├── entrypoint.sh    # Lifecycle script (setup, upgrade, callback)
+├── appbox-installed-callback  # Sends the installed callback (copy as-is)
 ├── icon.png         # App icon (512x512 PNG) for the store listing
 ├── moduser.sh       # Password change script (required for all apps)
 ├── README.md        # Full documentation and schema reference
-└── TESTING.md       # Testing framework — complete before submitting
+├── TESTING.md       # Testing framework — complete before submitting
+└── tests/
+    └── test-installed-callback.sh  # Callback helper and entrypoint tests
 ```
 
 ## Key Constraints
@@ -46,7 +49,7 @@ When creating or modifying an Appbox app, always follow these rules:
    - Check `/etc/app_configured` to detect first boot vs restart
    - Fresh install: start app, configure admin user, stop app
    - Upgrade: skip user creation (data exists), run migrations if needed
-   - Call platform API callback: `POST https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}`
+   - Mark the platform callback (`POST https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}`) as pending, then send it **in the background** with `appbox-installed-callback`. Never make `exec`, cont-init or an s6 oneshot wait for it. See [Platform Callback](#platform-callback).
    - Start app with `exec gosu 1000:1000 "$@"`
 
 6. **Secure by default** — Use `complexPassword` validation for admin passwords. Disable public registration. Never hardcode credentials.
@@ -110,7 +113,8 @@ FROM <upstream-image>:<tag>
 RUN <install bash, curl, gosu>
 ADD entrypoint.sh /entrypoint.sh
 ADD moduser.sh /moduser.sh
-RUN chmod +x /entrypoint.sh /moduser.sh
+COPY appbox-installed-callback /usr/local/bin/appbox-installed-callback
+RUN chmod +x /entrypoint.sh /moduser.sh /usr/local/bin/appbox-installed-callback
 ENTRYPOINT ["/entrypoint.sh"]
 CMD [<app's default command>]
 EXPOSE <internal port>
@@ -146,7 +150,8 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-postgres/dependencies.d && \
 
 ADD entrypoint.sh /entrypoint.sh
 ADD moduser.sh /moduser.sh
-RUN chmod +x /entrypoint.sh /moduser.sh
+COPY appbox-installed-callback /usr/local/bin/appbox-installed-callback
+RUN chmod +x /entrypoint.sh /moduser.sh /usr/local/bin/appbox-installed-callback
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/init"]
 EXPOSE <internal port>
@@ -169,20 +174,20 @@ EXPOSE <internal port>
 set -e
 
 APP_USER="1000:1000"
+LOCAL_URL="http://localhost:<port>"
+CALLBACK_PENDING_FLAG="/etc/appbox_callback_pending"
 
-callback_installed() {
-    if [[ "${SKIP_APPBOX_CALLBACK:-0}" == "1" ]]; then return 0; fi
-    local callback_url="https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}"
-    local headers=(-H "Accept: application/json" -H "Content-Type:application/json")
-    if [[ -n "${CALLBACK_TOKEN:-}" ]]; then
-        headers+=(-H "X-Cylo-Callback-Token: ${CALLBACK_TOKEN}")
-    fi
-    until curl -fsS -o /dev/null "${headers[@]}" -X POST "${callback_url}"; do
-        sleep 5
-    done
+# ... wait_for_http ...
+
+send_pending_callback() {
+    set +e   # runs in the background; never let a timeout kill it
+    wait_for_http "${LOCAL_URL}/<health-path>" 150 2 || true
+    /usr/local/bin/appbox-installed-callback
+    rm -f "${CALLBACK_PENDING_FLAG}"
 }
 
 if [[ ! -f /etc/app_configured ]]; then
+    touch "${CALLBACK_PENDING_FLAG}"   # first, and do NOT call the API here
     touch /etc/app_configured
 
     if [[ ! -f "<persisted-data-path>" ]]; then
@@ -192,8 +197,10 @@ if [[ ! -f /etc/app_configured ]]; then
     else
         # UPGRADE: skip user creation
     fi
+fi
 
-    callback_installed
+if [[ -f "${CALLBACK_PENDING_FLAG}" ]]; then
+    send_pending_callback &   # background: the app starts whatever the API says
 fi
 
 exec gosu "${APP_USER}" "$@"
@@ -211,8 +218,9 @@ APP_USER="1000:1000"
 CONFIG_FLAG="/etc/app_configured"
 FRESH_MARKER="/config/.app_configured"   # persistent marker in volume
 LOCAL_URL="http://localhost:8080"
+CALLBACK_PENDING_FLAG="/etc/appbox_callback_pending"
 
-# ... helper functions (wait_for_http, callback_installed, create_admin_user) ...
+# ... helper functions (wait_for_http, create_admin_user) ...
 
 # === One-time setup (runs BEFORE s6-overlay /init) ===
 # Initialize database directories, run migrations, etc.
@@ -222,8 +230,11 @@ chown -R 1000:1000 /config/database
 
 # === Appbox lifecycle in a background subshell ===
 if [[ ! -f "${CONFIG_FLAG}" ]]; then
+    touch "${CALLBACK_PENDING_FLAG}"   # before CONFIG_FLAG
     touch "${CONFIG_FLAG}"
+fi
 
+if [[ -f "${CALLBACK_PENDING_FLAG}" ]]; then
     (
         set +e   # CRITICAL: prevent set -e from killing the subshell on timeout
 
@@ -236,7 +247,8 @@ if [[ ! -f "${CONFIG_FLAG}" ]]; then
             wait_for_http "${LOCAL_URL}/api/health" 300 2
         fi
 
-        callback_installed
+        /usr/local/bin/appbox-installed-callback
+        rm -f "${CALLBACK_PENDING_FLAG}"
     ) &
 fi
 
@@ -249,6 +261,54 @@ exec "$@"
 - The lifecycle subshell uses `set +e` to prevent inherited `set -e` from killing it when `wait_for_http` times out.
 - Use a generous timeout (300 × 2s = 10 min) for `wait_for_http` since s6 init scripts may take time before services start.
 - `exec "$@"` becomes `exec /init` (from CMD), NOT `exec gosu ... "$@"`. s6-overlay's service `run` scripts handle user switching via `gosu` or `s6-setuidgid`.
+
+### Setup in cont-init or an s6 oneshot (LSIO images)
+
+When first-run setup lives in `/etc/cont-init.d/` or an `init-*` oneshot instead of the entrypoint, s6 waits for it to finish before starting services. Never call the API there. Mark the callback pending and send it from a longrun service:
+
+```bash
+# /etc/cont-init.d/50-appbox (or your init-config-<app> oneshot)
+if [[ ! -f /etc/app_configured ]]; then
+    touch /etc/appbox_callback_pending   # before the configured marker
+    touch /etc/app_configured
+    # ... first-run setup ...
+fi
+```
+
+```bash
+#!/command/with-contenv bash
+# /etc/s6-overlay/s6-rc.d/svc-appbox-callback/run   (type: longrun)
+if [[ -f /etc/appbox_callback_pending ]]; then
+    # optional: wait_for_http "http://localhost:<port>/<health-path>" 300 2
+    /usr/local/bin/appbox-installed-callback
+    rm -f /etc/appbox_callback_pending
+fi
+exec s6-pause   # stay up so s6 does not restart it and send the callback again
+```
+
+```dockerfile
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-appbox-callback/dependencies.d && \
+    echo longrun > /etc/s6-overlay/s6-rc.d/svc-appbox-callback/type && \
+    touch /etc/s6-overlay/s6-rc.d/svc-appbox-callback/dependencies.d/legacy-cont-init && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-appbox-callback
+COPY svc-appbox-callback-run /etc/s6-overlay/s6-rc.d/svc-appbox-callback/run
+```
+
+If setup runs in an `init-config-<app>` oneshot, add that to `dependencies.d` as well. On s6-overlay v2 images (`/etc/services.d/`), put the same `run` script in `/etc/services.d/appbox-callback/run` with `#!/usr/bin/with-contenv bash`.
+
+## Platform Callback
+
+With `behavior.expect_callback: true`, Appbox shows the app as "installing" until the container sends `POST https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}`. Use the `appbox-installed-callback` helper from this repo unchanged; it implements these rules:
+
+- **Never block startup on it.** The API accepts one installed callback per install or update. After that, when the platform has already sent it for the container, or after a migration has finished, it answers 401 or another 4xx, and retrying will not change that. An `until curl -f ...; sleep 5; done` loop in front of `exec`, in cont-init or in an s6 oneshot keeps the app down until someone restarts it by hand. Send the callback from a background job or an s6 longrun.
+- **Retry only transient failures**: network errors, 408, 429 and 5xx, with backoff. Log any other status once and stop.
+- **Mark it pending on first boot** (`/etc/appbox_callback_pending`, touched just before `/etc/app_configured` so a stop between the two cannot lose it) and remove the flag after the attempt. A restart while the API is unreachable then tries again, and a rejected callback is not repeated.
+- **Auth**: when `callback_requires_auth` is true, send `CALLBACK_TOKEN` in the `X-Cylo-Callback-Token` header (the API does not read `Authorization: Bearer`). `INSTANCE_ID` may also carry `?callback_token=...`.
+- **Secrets**: never echo `INSTANCE_ID` or `CALLBACK_TOKEN`, and keep them out of commands traced by `set -x`. Log only `${INSTANCE_ID%%\?*}`.
+- **No single-shot callback under `set -e`** (`set -e; curl -f .../installed/...`): a rejected callback then exits the entrypoint and the container restart-loops.
+- **Match `expect_callback` to the image**: `true` only if the image sends the callback. If the catalogue says `false`, the platform sends the callback itself and the container's own call is rejected; if it says `true` and the image never calls back, the install never leaves "installing".
+
+`tests/test-installed-callback.sh` runs the helper and the entrypoint against a local mock API; keep it passing when you change either.
 
 ## Testing
 
@@ -384,6 +444,7 @@ When the app uses an embedded database (PostgreSQL, MySQL, SQLite) and has no CL
 
 - Using a UID other than 1000 — will break with userns
 - Forgetting the API callback — app stays stuck in "installing" state
+- **Blocking startup on the API callback** — `until curl -f .../apps/installed/...; do sleep 5; done` before `exec`, in cont-init or in an s6 oneshot. Once the API rejects the callback (401 after the token was used, or the platform already marked the instance installed) the loop never ends and the app never starts. Use `appbox-installed-callback` in the background (see [Platform Callback](#platform-callback))
 - Not persisting data in volumes — data lost on restart/upgrade
 - Running the app as PID 1 without `exec` — signals not forwarded, graceful shutdown fails
 - Including platform-managed fields in appbox.yml — they are ignored
@@ -392,7 +453,7 @@ When the app uses an embedded database (PostgreSQL, MySQL, SQLite) and has no CL
 - Defining HTTP ports in the `ports` section for web apps — exposes the port publicly bypassing nginx/SSL. Use `VIRTUAL_PORT` env var instead
 - Forgetting `VIRTUAL_PORT` when the app doesn't listen on port 80 — nginx proxies to port 80 by default and the app won't load
 - Not adding `EXPOSE` in the Dockerfile for the web UI port (80 or custom) — the platform reads this to know which ports the container uses
-- **`set -e` in background subshells** — `set -e` propagates into `( ... ) &` subshells. If any command in the subshell returns non-zero (e.g. `wait_for_http` timing out), the entire subshell dies and `callback_installed` never runs. Always add `set +e` at the top of background subshells
+- **`set -e` in background subshells** — `set -e` propagates into `( ... ) &` subshells. If any command in the subshell returns non-zero (e.g. `wait_for_http` timing out), the entire subshell dies and the callback is never sent. Always add `set +e` at the top of background subshells
 - **Insufficient `wait_for_http` timeout** — Services may take minutes to start if s6 init scripts are slow (e.g. LSIO image running expensive chowns). Use at least 300 attempts × 2s = 10 minutes, not 60 × 2s = 2 minutes
 - **Missing s6 service dependencies** — s6-rc starts services in parallel with init scripts. Without explicit `dependencies.d` files, services start before directories are chowned, before the user is created, etc. Always check the s6 dependency graph
 - **Docker volumes start root-owned** — A new Docker volume has root:root ownership. Your entrypoint or init scripts must chown it before the app writes to it. For LSIO images, the app-specific init script (e.g. `init-config-*`) usually handles this, but only if services wait for it (see s6 dependency ordering)

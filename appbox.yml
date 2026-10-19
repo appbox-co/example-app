@@ -319,7 +319,9 @@ behavior:
   # is complete. When true, the entrypoint script MUST call the callback URL
   # (see entrypoint.sh for details) and the platform will wait for this before
   # marking the installation as complete. When false, the platform marks the
-  # install as complete immediately after starting the container.
+  # install as complete immediately after starting the container, and any
+  # callback the container still sends is rejected. Keep this in step with
+  # what the image actually does.
   # Set to true for apps that need first-run setup time before the user
   # accesses them (e.g. database migrations, initial config).
   # Default: false
@@ -328,7 +330,9 @@ behavior:
   # callback_requires_auth
   # Whether the callback request from the container must include an
   # authentication token. When true, the container must send the
-  # CALLBACK_TOKEN environment variable in the X-Cylo-Callback-Token header.
+  # CALLBACK_TOKEN environment variable in the X-Cylo-Callback-Token header
+  # (appbox-installed-callback does this).
+  # Maps to: apps.callback_requires_auth (integer, 0/1)
   # Default: false
   callback_requires_auth: false
 
@@ -974,9 +978,10 @@ custom_fields:
 #   The entrypoint sets this value during the API callback:
 #
 #     ADMIN_URL="https://${DOMAIN}:${ADMIN_PORT}/admin"
-#     curl -X POST "https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}" \
-#       -H "Content-Type: application/json" \
-#       -d "{\"custom_fields\": [{\"key\": \"ADMIN_PANEL\", \"value\": \"${ADMIN_URL}\"}]}"
+#     /usr/local/bin/appbox-installed-callback \
+#       "{\"custom_fields\": [{\"key\": \"ADMIN_PANEL\", \"value\": \"${ADMIN_URL}\"}]}"
+#
+#   (run from the background callback job, never in front of `exec`)
 #
 #   Only externalURL fields can be set via callback. If you need to update
 #   other field types via callback, contact support:

@@ -8,7 +8,8 @@
 #
 #   1. State detection (fresh install vs upgrade vs restart)
 #   2. First-run configuration (create admin user, apply settings)
-#   3. Platform callback (notify Appbox that the app is ready)
+#   3. Platform callback (marked pending, then sent in the background once
+#      the app answers, so it can never block the app from starting)
 #   4. Privilege dropping and exec of the main app process
 #
 # NOTE: Password changes are handled by /moduser.sh (separate script).
@@ -34,8 +35,8 @@
 #     does not exist. This happens when the container image is replaced during
 #     an update — the persistent volume data survives, but the container
 #     filesystem (including /etc/app_configured) is fresh.
-#     The script skips user creation (data already exists) but still runs
-#     the callback and any migration steps.
+#     The script skips user creation (data already exists) but still sends
+#     the callback and runs any migration steps.
 #
 #   RESTART:
 #     Both persisted data AND /etc/app_configured exist. This is a normal
@@ -65,6 +66,9 @@ CONFIG_FLAG="/etc/app_configured"
 DATA_DB="/app/data/kuma.db"
 APP_USER="1000:1000"
 LOCAL_URL="http://localhost:3001"
+READY_URL="${LOCAL_URL}/api/entry-page"
+CALLBACK_PENDING_FLAG="/etc/appbox_callback_pending"
+CALLBACK_HELPER="/usr/local/bin/appbox-installed-callback"
 
 # =============================================================================
 # Helper Functions
@@ -175,24 +179,34 @@ socket.on('connect_error', (err) => {
 # ready for the user to access.
 #
 # HOW IT WORKS:
-#   The platform sets `expect_callback: true` in appbox.yml, which tells
-#   it to wait for this POST request before showing the app as "installed"
-#   to the user. Without this callback, the user might try to access the
-#   app before setup is complete.
+#   With `expect_callback: true` in appbox.yml, the platform waits for one
+#   POST to /v1/apps/installed/${INSTANCE_ID} before showing the app as
+#   "installed". The /usr/local/bin/appbox-installed-callback helper sends it.
 #
-# WHY RETRY IN A LOOP:
-#   The API server might be temporarily unavailable, or there could be
-#   a brief network issue. We retry every 5 seconds until we get a 200
-#   response. This is safe because the callback is idempotent.
+# NEVER BLOCK STARTUP ON THE CALLBACK:
+#   The API accepts ONE installed callback per install or update. After that
+#   (or after the platform sent it on the container's behalf, or a migration
+#   finished) it answers 401 or another 4xx, and repeating the request can
+#   never succeed. An `until curl -f ...; sleep 5; done` loop in front of
+#   `exec` therefore keeps the app down forever. So:
+#     - first boot only marks the callback as pending (CALLBACK_PENDING_FLAG);
+#     - a background job sends it once the app answers, while `exec` starts
+#       the app straight away;
+#     - the helper retries only network errors, 408, 429 and 5xx, logs any
+#       other status once and stops;
+#     - the pending flag is removed after the attempt, so a restart while the
+#       API is unreachable retries, but a rejected callback is not repeated.
 #
 # CALLBACK_REQUIRES_AUTH:
-#   If `callback_requires_auth` is true in appbox.yml, include the
-#   CALLBACK_TOKEN in the X-Cylo-Callback-Token header.
+#   If `callback_requires_auth` is true in appbox.yml, the helper sends
+#   CALLBACK_TOKEN in the X-Cylo-Callback-Token header. INSTANCE_ID may also
+#   carry `?callback_token=...`. Both are secrets: never echo them, and do
+#   not reference them in commands traced by `set -x`.
 #
 # SETTING CUSTOM FIELD VALUES (externalURL only):
-#   The callback can also pass clickable links back to the platform by
-#   including a "custom_fields" array in the JSON body. Only externalURL
-#   fields can be set this way. See README.md for a full example.
+#   Pass a JSON body to the helper to set clickable links, e.g.
+#     "${CALLBACK_HELPER}" '{"custom_fields":[{"key":"ADMIN_PANEL","value":"https://..."}]}'
+#   Only externalURL fields can be set this way. See README.md.
 #
 #   Note: if the URL is predictable (e.g. https://<domain>/), prefer using
 #   template_type: instance with %DOMAIN.DOMAIN% in appbox.yml instead of
@@ -202,25 +216,17 @@ socket.on('connect_error', (err) => {
 # SKIP_APPBOX_CALLBACK:
 #   Set SKIP_APPBOX_CALLBACK=1 for local development/testing to skip the
 #   callback entirely (it would fail outside the platform anyway).
-callback_installed() {
-    if [[ "${SKIP_APPBOX_CALLBACK:-0}" == "1" ]]; then
-        echo "Skipping Appbox callback because SKIP_APPBOX_CALLBACK=1"
-        return 0
+send_pending_callback() {
+    # This runs in a background subshell. `set -e` (if enabled) is inherited
+    # and would kill it when the readiness check times out.
+    set +e
+
+    if ! wait_for_http "${READY_URL}" 150 2; then
+        echo "WARNING: app did not answer ${READY_URL}; sending the installed callback anyway."
     fi
 
-    local callback_url="https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}"
-    local headers=(
-        -H "Accept: application/json"
-        -H "Content-Type:application/json"
-    )
-
-    if [[ -n "${CALLBACK_TOKEN:-}" ]]; then
-        headers+=(-H "X-Cylo-Callback-Token: ${CALLBACK_TOKEN}")
-    fi
-
-    until curl -fsS -o /dev/null "${headers[@]}" -X POST "${callback_url}"; do
-        sleep 5
-    done
+    "${CALLBACK_HELPER}"
+    rm -f "${CALLBACK_PENDING_FLAG}"
 }
 
 # =============================================================================
@@ -230,6 +236,12 @@ callback_installed() {
 # restarts where /etc/app_configured already exists).
 
 if [[ ! -f "${CONFIG_FLAG}" ]]; then
+
+    # Mark the platform callback as pending BEFORE marking the container as
+    # configured, so a container that stops between the two still sends it on
+    # its next start. Do NOT call the API here: it would delay (or, if
+    # rejected, block) the app start. STEP 3 sends it in the background.
+    touch "${CALLBACK_PENDING_FLAG}"
 
     # Mark this container image as configured. This file persists across
     # container restarts but is lost when the container image is replaced
@@ -306,7 +318,7 @@ if [[ ! -f "${CONFIG_FLAG}" ]]; then
         #   - The admin user already exists (skip creation)
         #   - Database migrations may need to run (most apps handle this
         #     automatically on startup)
-        #   - Platform callback still needs to happen
+        #   - The platform callback is still sent (an update waits for it too)
         #
         # If your app needs explicit migration steps during upgrades,
         # add them here. For example:
@@ -320,17 +332,23 @@ if [[ ! -f "${CONFIG_FLAG}" ]]; then
         echo "Skipping user creation."
     fi
 
-    # =========================================================================
-    # STEP 3: Platform Callback
-    # =========================================================================
-    callback_installed
+fi
 
+# =============================================================================
+# STEP 3: Send a Pending Callback in the Background
+# =============================================================================
+# The flag is set on the first boot of this image and removed after the
+# attempt. It lives on the container filesystem like CONFIG_FLAG, so a restart
+# before the API answered tries again.
+if [[ -f "${CALLBACK_PENDING_FLAG}" ]]; then
+    send_pending_callback &
 fi
 
 # =============================================================================
 # STEP 4: Start the App
 # =============================================================================
-# This runs on EVERY container start (fresh install, upgrade, and restart).
+# This runs on EVERY container start (fresh install, upgrade, and restart),
+# whether or not the callback has been sent or accepted.
 #
 # EXEC AND GOSU:
 #   `exec` replaces the current shell process with the app process, making

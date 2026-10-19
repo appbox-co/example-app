@@ -89,9 +89,16 @@ RUN apt-get update && \
 #   - Container DNS and networking setup
 #   - First-run detection and initial app configuration
 #   - Upgrade detection and handling
-#   - Platform callback to signal installation complete
+#   - Platform callback to signal installation complete (in the background)
 #   - Privilege dropping and exec of the main app process
 ADD entrypoint.sh /entrypoint.sh
+
+# ADD INSTALLED-CALLBACK HELPER
+# Sends POST /v1/apps/installed/${INSTANCE_ID} for the entrypoint (or an s6
+# service). It runs in the background and stops on a rejected callback, so
+# the callback can never keep the app from starting. See AGENTS.md.
+COPY appbox-installed-callback /usr/local/bin/appbox-installed-callback
+RUN chmod 755 /usr/local/bin/appbox-installed-callback
 
 # ADD PASSWORD CHANGE SCRIPT
 # All Appbox apps MUST include moduser.sh at the container root.
