@@ -25,12 +25,13 @@ example-app/
 ├── Dockerfile       # Container image definition
 ├── entrypoint.sh    # Lifecycle script (setup, upgrade, callback)
 ├── appbox-installed-callback  # Sends the installed callback (copy as-is)
+├── appbox-kuma-admin  # Uptime Kuma only: asks whether an admin exists, creates it
 ├── icon.png         # App icon (512x512 PNG) for the store listing
 ├── moduser.sh       # Password change script (required for all apps)
 ├── README.md        # Full documentation and schema reference
 ├── TESTING.md       # Testing framework — complete before submitting
 └── tests/
-    └── test-installed-callback.sh  # Callback helper and entrypoint tests
+    └── test-installed-callback.sh  # Callback helper, entrypoint and admin setup tests
 ```
 
 ## Key Constraints
@@ -122,6 +123,9 @@ and report the install finished only once the app confirms the account exists.
      the pending callback.
    - Never log the password, request bodies or the app's error bodies, which
      can echo submitted values.
+
+   The bundled `entrypoint.sh` (single-process, with `appbox-kuma-admin`) and
+   CyloTech/immich `entrypoint.sh` (s6) are tested examples.
 
 ## appbox.yml
 

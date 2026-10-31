@@ -100,6 +100,12 @@ ADD entrypoint.sh /entrypoint.sh
 COPY appbox-installed-callback /usr/local/bin/appbox-installed-callback
 RUN chmod 755 /usr/local/bin/appbox-installed-callback
 
+# appbox-kuma-admin asks Uptime Kuma over Socket.IO whether it still needs an
+# admin account and creates it from USERNAME/PASSWORD (see entrypoint.sh).
+COPY appbox-kuma-admin /usr/local/bin/appbox-kuma-admin
+RUN chmod 755 /usr/local/bin/appbox-kuma-admin && \
+    node -e "require(require.resolve('socket.io-client', { paths: ['/app'] }))"
+
 # ADD PASSWORD CHANGE SCRIPT
 # All Appbox apps MUST include moduser.sh at the container root.
 # This allows users to recover access if they are locked out.

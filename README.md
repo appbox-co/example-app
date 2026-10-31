@@ -921,53 +921,43 @@ exec "$@"   # becomes: exec /init
 
 ## Entrypoint Lifecycle
 
-The entrypoint script detects three container states based on two signals:
+The entrypoint script decides what to do from three signals:
 
 | Signal | File | Persisted? | Survives restart? | Survives upgrade? |
 |--------|------|-----------|-------------------|-------------------|
-| App data | `/app/data/kuma.db` (in volume) | Yes | Yes | Yes |
 | Config flag | `/etc/app_configured` (container fs) | No | Yes | No |
+| Callback pending | `/etc/appbox_callback_pending` (container fs) | No | Yes, until the callback is sent | No |
+| Setup marker | `/app/data/.appbox_setup_done` (in volume) | Yes | Yes | Yes |
 
 ### State detection
 
 ```
-                    ┌──────────────────────────┐
-                    │    Container starts       │
-                    └────────────┬─────────────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │  /etc/app_configured      │
-                    │  exists?                  │
-                    └────┬──────────────┬──────┘
-                         │ No           │ Yes
-                         │              │
-              ┌──────────▼──────────┐   │
-              │ Touch               │   │
-              │ /etc/app_configured │   │
-              └──────────┬──────────┘   │
-                         │              │
-              ┌──────────▼──────────┐   │
-              │ Persisted data      │   │
-              │ exists?             │   │
-              └───┬────────────┬────┘   │
-                  │ No         │ Yes    │
-                  │            │        │
-       ┌──────────▼──────┐ ┌──▼─────┐  │
-       │  FRESH INSTALL  │ │UPGRADE │  │
-       │  Start app      │ │Skip    │  │
-       │  Create admin   │ │user    │  │
-       │  Stop app       │ │setup   │  │
-       └──────────┬──────┘ └──┬─────┘  │
-                  │            │        │
-              ┌───▼────────────▼───┐    │
-              │ Start API callback │    │
-              │ in the background  │    │
-              └────────┬───────────┘    │
-                       │                │
-              ┌────────▼────────────────▼──┐
-              │  exec gosu 1000:1000 "$@"  │
-              │  (run app as PID 1)        │
-              └────────────────────────────┘
+                Container starts
+                       │
+        /etc/app_configured exists? ── no ──► mark callback pending,
+                       │                      then touch /etc/app_configured
+                      yes                                │
+                       ├─────────────────────────────────┘
+                       ▼
+        callback pending AND no setup marker?
+               │                     │
+              yes                    no (UPGRADE or RESTART)
+               ▼                     │
+   SETUP: start app in background,   │
+   choose the database, make sure    │
+   the admin exists, stop the app    │
+               │                     │
+     admin confirmed? ── no ──► FAIL CLOSED: no marker, no callback,
+               │                exit 1 (Docker restarts it and setup
+              yes               runs again)
+               ▼                     │
+     write the setup marker          │
+               ├─────────────────────┘
+               ▼
+     callback pending? ── yes ──► send it in the background
+               │
+               ▼
+     exec gosu 1000:1000 "$@"  (app runs as PID 1)
 ```
 
 ### Fresh install
@@ -976,8 +966,20 @@ The entrypoint script detects three container states based on two signals:
 2. App started in background
 3. Wait for app to be ready (poll HTTP)
 4. Create admin user via app's setup API, with the request built by `jq` from the environment, and confirm from the app's own state that the admin now exists
-5. Stop the background app
+5. Write the setup marker and stop the background app
 6. Start the callback in the background, then start app with `exec` as PID 1
+
+### Upgrade
+
+1. Mark the platform API callback as pending, then the container as configured
+2. Skip user creation (setup marker present). An install made before the marker existed gets one setup pass that only finds its admin and writes the marker
+3. Optional: run migration steps
+4. Start the callback in the background, then start app with `exec` as PID 1
+
+### Restart
+
+1. Skip all setup (callback sent and setup marker present)
+2. Start app with `exec` as PID 1
 
 ### When admin setup fails
 
@@ -992,9 +994,9 @@ Detect "already set up" from a marker written after confirmed setup, or from
 the app's own state. Do not detect it from the data directory existing, or from
 an HTTP status such as 400. See AGENTS.md rule 19 for the full list.
 
-The bundled Uptime Kuma `entrypoint.sh` predates this guidance: it still logs a
-warning and carries on when setup fails, and it detects upgrades from
-`kuma.db`. Do not copy that part.
+The bundled Uptime Kuma `entrypoint.sh` follows this pattern: `appbox-kuma-admin`
+asks Uptime Kuma whether it still needs an admin, and `tests/test-installed-callback.sh`
+covers the fresh, rejected, unreachable, upgrade and restart paths.
 
 ### Upgrade
 

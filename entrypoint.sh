@@ -23,24 +23,34 @@
 #   1000:1000 inside the container. The gosu command at the end of this
 #   script drops from UID 0 to UID 1000 before exec'ing the app.
 #
-# THREE CONTAINER STATES:
+# CONTAINER STATES:
+#
+#   Two flags decide what happens on each start:
+#     /etc/appbox_callback_pending  (container filesystem) the installed
+#                                   callback has not been sent yet
+#     /app/data/.appbox_setup_done  (persistent volume) the admin account has
+#                                   been confirmed
 #
 #   FRESH INSTALL:
-#     No persisted data exists AND /etc/app_configured does not exist.
-#     The script performs full first-run setup: starts the app temporarily,
-#     creates the admin user, configures settings, then stops the app.
+#     New container, no setup marker. The script starts the app temporarily,
+#     creates the admin user, confirms it exists, writes the setup marker and
+#     stops the app.
 #
 #   UPGRADE:
-#     Persisted data exists (from a previous install) BUT /etc/app_configured
-#     does not exist. This happens when the container image is replaced during
-#     an update — the persistent volume data survives, but the container
-#     filesystem (including /etc/app_configured) is fresh.
-#     The script skips user creation (data already exists) but still sends
-#     the callback and runs any migration steps.
+#     New container (the image was replaced), setup marker present. The script
+#     skips user creation but still sends the callback and runs any migration
+#     steps. An install made before the marker existed gets one setup pass
+#     that only finds its admin and writes the marker.
+#
+#   SETUP FAILED:
+#     The app could not confirm an admin account. The script fails closed: no
+#     marker, no callback, the pending flag stays, and it exits 1 so the app's
+#     open setup page is never served. Docker restarts the container
+#     (unless-stopped) and setup runs again, as it does after a restart
+#     part-way through first boot.
 #
 #   RESTART:
-#     Both persisted data AND /etc/app_configured exist. This is a normal
-#     container restart (not an image replacement). The script skips all
+#     Callback already sent and setup marker present. The script skips all
 #     setup and goes straight to running the app.
 #
 # WHY /etc/app_configured?
@@ -49,6 +59,12 @@
 #   is replaced (during upgrades), but survives normal restarts. This lets
 #   us distinguish between "the container restarted" and "a new version was
 #   deployed" without needing version tracking logic.
+#
+# WHY A SETUP MARKER INSTEAD OF "THE DATABASE EXISTS"?
+#   The app creates its database before the admin account. If setup fails
+#   after that, "the database exists" would make the next start look like an
+#   upgrade and setup would never run again. The marker is written only after
+#   the admin is confirmed.
 #
 # =============================================================================
 
@@ -63,12 +79,13 @@ set -e
 # =============================================================================
 
 CONFIG_FLAG="/etc/app_configured"
-DATA_DB="/app/data/kuma.db"
+SETUP_MARKER="/app/data/.appbox_setup_done"
 APP_USER="1000:1000"
 LOCAL_URL="http://localhost:3001"
 READY_URL="${LOCAL_URL}/api/entry-page"
 CALLBACK_PENDING_FLAG="/etc/appbox_callback_pending"
 CALLBACK_HELPER="/usr/local/bin/appbox-installed-callback"
+KUMA_ADMIN="/usr/local/bin/appbox-kuma-admin"
 
 # =============================================================================
 # Helper Functions
@@ -95,26 +112,51 @@ wait_for_http() {
 }
 
 # UPTIME KUMA v2 SETUP — STAGE 1: Database Initialization
-# Uptime Kuma v2 requires an explicit HTTP POST to /setup-database to choose
-# the database engine before the app enters its normal running state. We use
-# SQLite (single-file, no external DB needed — fits the single-container model).
+# Uptime Kuma v2 serves a database setup page until a database engine is
+# chosen; its /api/entry-page then answers {"type":"setup-database"}. Choose
+# SQLite if it asks (single file, no external DB needed, which fits the
+# single-container model), then wait for the main server.
 #
 # ADAPTING FOR OTHER APPS:
 #   Most apps don't need this step. If your app auto-initializes its database
-#   on first start, you can skip this entirely.
-setup_sqlite_database() {
-    wait_for_http "${LOCAL_URL}/setup-database-info" 90 2 || return 1
+#   on first start, just wait for it to answer.
+ensure_database() {
+    local attempts=90
+    local i=0
+    local info page
 
-    curl -fsS -o /dev/null \
-        -H "Content-Type: application/json" \
-        -X POST "${LOCAL_URL}/setup-database" \
-        --data '{"dbConfig":{"type":"sqlite"}}'
+    while [[ "${i}" -lt "${attempts}" ]]; do
+        page=$(curl -sf "${READY_URL}" 2>/dev/null)
+        if [[ -n "${page}" && "${page}" != *'"setup-database"'* ]]; then
+            return 0
+        fi
+
+        info=$(curl -sf "${LOCAL_URL}/setup-database-info" 2>/dev/null)
+        if [[ "${info}" == *'"needSetup":true'* && "${info}" != *'"runningSetup":true'* ]]; then
+            curl -fsS -o /dev/null \
+                -H "Content-Type: application/json" \
+                -X POST "${LOCAL_URL}/setup-database" \
+                --data '{"dbConfig":{"type":"sqlite"}}' 2>/dev/null
+        fi
+
+        i=$((i + 1))
+        sleep 2
+    done
+
+    echo "ERROR: Uptime Kuma did not finish starting"
+    return 1
 }
 
 # UPTIME KUMA v2 SETUP — STAGE 2: Admin User Creation
-# After the database is initialized, Uptime Kuma accepts a "setup" Socket.IO
-# event to create the initial admin user. We retry in a loop because the app
-# may take a moment to restart after database configuration.
+# /usr/local/bin/appbox-kuma-admin talks to Uptime Kuma's Socket.IO API:
+# `need-setup` prints true while it has no user and false once it has one;
+# `setup` creates the admin from USERNAME and PASSWORD in the environment and
+# prints ok or rejected. The credentials never reach a command line.
+#
+# Only needSetup decides that an admin exists. A refused setup while Uptime
+# Kuma still needs one means the account was rejected (a weak password, for
+# example): fail at once instead of reporting success. No answer at all is
+# retried. Returns 0 once an admin exists, made now or already there.
 #
 # ALTERNATIVE APPROACHES FOR OTHER APPS:
 #
@@ -138,41 +180,39 @@ setup_sqlite_database() {
 #      backslash in the password breaks the file. For YAML (a JSON document
 #      is valid YAML):
 #      jq -n '{admin_user: env.USERNAME, admin_pass: env.PASSWORD}' > /app/config.yml
-create_admin_user() {
+ensure_admin_user() {
     local attempts=30
-    local sleep_seconds=2
     local i=0
+    local result
 
     while [[ "${i}" -lt "${attempts}" ]]; do
-        node -e "
-const { io } = require('socket.io-client');
-const socket = io('${LOCAL_URL}', { reconnection: false, timeout: 30000 });
-
-socket.on('connect', () => {
-    socket.emit('setup', process.env.USERNAME, process.env.PASSWORD, (res) => {
-        if (!res.ok) {
-            console.error('Setup failed:', res.msg);
-        } else {
-            console.log('Admin user created successfully');
-        }
-        socket.disconnect();
-        process.exit(res.ok ? 0 : 1);
-    });
-});
-
-socket.on('connect_error', (err) => {
-    console.error('Socket connection failed:', err.message);
-    process.exit(1);
-});
-"
-        if [[ $? -eq 0 ]]; then
-            return 0
-        fi
+        case "$("${KUMA_ADMIN}" need-setup 2>/dev/null)" in
+            false)
+                echo "Uptime Kuma already has an admin account, skipping admin creation"
+                return 0
+                ;;
+            true)
+                result=$("${KUMA_ADMIN}" setup 2>/dev/null)
+                if [[ "$("${KUMA_ADMIN}" need-setup 2>/dev/null)" == "false" ]]; then
+                    if [[ "${result}" == "ok" ]]; then
+                        echo "Admin user created successfully"
+                    else
+                        echo "Uptime Kuma has an admin account"
+                    fi
+                    return 0
+                fi
+                if [[ "${result}" == "rejected" ]]; then
+                    echo "ERROR: Uptime Kuma rejected the admin account and still has no admin"
+                    return 1
+                fi
+                ;;
+        esac
 
         i=$((i + 1))
-        sleep "${sleep_seconds}"
+        sleep 2
     done
 
+    echo "ERROR: Uptime Kuma still has no admin account after ${attempts} attempts"
     return 1
 }
 
@@ -236,112 +276,78 @@ send_pending_callback() {
 # =============================================================================
 # STEP 1: First-Boot Detection
 # =============================================================================
-# Only run setup on first boot of this container image (not on normal
-# restarts where /etc/app_configured already exists).
+# On the first boot of this container image, mark the platform callback as
+# pending BEFORE marking the container as configured, so a container that
+# stops between the two still sends it on its next start. Do NOT call the API
+# here: it would delay (or, if rejected, block) the app start. STEP 3 sends it
+# in the background.
 
 if [[ ! -f "${CONFIG_FLAG}" ]]; then
-
-    # Mark the platform callback as pending BEFORE marking the container as
-    # configured, so a container that stops between the two still sends it on
-    # its next start. Do NOT call the API here: it would delay (or, if
-    # rejected, block) the app start. STEP 3 sends it in the background.
     touch "${CALLBACK_PENDING_FLAG}"
-
-    # Mark this container image as configured. This file persists across
-    # container restarts but is lost when the container image is replaced
-    # (during upgrades). See "THREE CONTAINER STATES" above.
     touch "${CONFIG_FLAG}"
+fi
 
-    # =========================================================================
-    # STEP 2: State Detection and First-Run Setup
-    # =========================================================================
-    # Check if this is a FRESH INSTALL or an UPGRADE by looking for
-    # persisted state in the volume mount.
-    #
-    # For Uptime Kuma, the database file at /app/data/kuma.db is the
-    # indicator. If it exists, we have data from a previous install
-    # (upgrade scenario). If it doesn't, this is a brand new install.
-    #
-    # IMPORTANT: The path checked here MUST be inside a directory listed
-    # in the `volumes` section of appbox.yml. Otherwise the data won't
-    # persist and every restart would look like a fresh install.
+# =============================================================================
+# STEP 2: First-Run Setup
+# =============================================================================
+# Setup runs while the callback is pending and the setup marker is missing:
+# on a fresh install, after a restart part-way through it, after a failed
+# attempt, and once on the first update of an install made before the marker
+# existed (where it only finds the existing admin).
+#
+#   1. Start the app in the background
+#   2. Choose the database (Uptime Kuma v2 requires this)
+#   3. Make sure the admin user exists, using the credentials from custom
+#      fields, and write the setup marker only once it does
+#   4. Stop the app (it is properly started at the end)
+#
+# WHY START AND STOP?
+#   Many apps only allow initial setup through their web interface or API.
+#   There's no CLI flag or config file for setting the initial admin user, so
+#   the app must be running to call its setup endpoint. It is then stopped so
+#   it can be cleanly started with `exec` as PID 1 at the end of this script.
+#
+# FAIL CLOSED:
+#   Without a confirmed admin, the script exits 1: no marker, no callback,
+#   the pending flag stays, and the app's open setup page is never served.
+#   Docker restarts the container (unless-stopped) and setup runs again. See
+#   AGENTS.md rule 19.
+#
+# ENVIRONMENT VARIABLES:
+#   USERNAME and PASSWORD come from the custom_fields defined in appbox.yml.
+#   The platform injects each custom field's value as an environment variable
+#   using the field's key name.
+#
+# IMPORTANT: The setup marker MUST be inside a directory listed in the
+# `volumes` section of appbox.yml. Otherwise it would not persist and every
+# update would run setup again.
 
-    if [[ ! -f "${DATA_DB}" ]]; then
+if [[ -f "${CALLBACK_PENDING_FLAG}" && ! -f "${SETUP_MARKER}" ]]; then
+    echo "Setting up Uptime Kuma..."
 
-        # =================================================================
-        # FRESH INSTALL — First-Run Setup
-        # =================================================================
-        # No existing database found. We need to:
-        #   1. Start the app in the background
-        #   2. Initialize the database (Uptime Kuma v2 requires this)
-        #   3. Create the admin user using the credentials from custom fields
-        #   4. Stop the app (it will be properly started at the end)
-        #
-        # WHY START AND STOP?
-        #   Many apps only allow initial setup through their web interface
-        #   or API — there's no CLI flag or config file for setting the
-        #   initial admin user. We need the app running to call its setup
-        #   endpoint, then we stop it so it can be cleanly started with
-        #   `exec` as PID 1 at the end of this script.
-        #
-        # ENVIRONMENT VARIABLES:
-        #   USERNAME and PASSWORD come from the custom_fields defined in
-        #   appbox.yml. The platform injects each custom field's value as
-        #   an environment variable using the field's key name.
+    gosu "${APP_USER}" "$@" &
+    APP_PID=$!
 
-        echo "Fresh install detected, bootstrapping Uptime Kuma..."
-
-        gosu "${APP_USER}" "$@" &
-        APP_PID=$!
-
-        # Stage 1: Initialize the SQLite database
-        if ! setup_sqlite_database; then
-            echo "WARNING: Failed to initialize SQLite database via /setup-database."
-        fi
-
-        # After DB config, Kuma restarts into the main server process.
-        wait_for_http "${LOCAL_URL}/api/entry-page" 90 2 || true
-
-        # Stage 2: Create the admin user via Socket.IO
-        #
-        # NOTE: do not copy this failure handling. New apps must fail closed
-        # when admin setup fails (no setup marker, no installed callback,
-        # nothing serving, retry on the next start) and detect a finished
-        # setup from a marker written after success rather than from kuma.db.
-        # See AGENTS.md rule 19 and README "When admin setup fails".
-        if ! create_admin_user; then
-            echo "WARNING: Admin setup failed. Manual setup may be required."
-        fi
-
-        # Stop the background app so it can be restarted with exec below.
-        kill "${APP_PID}" 2>/dev/null || true
-        wait "${APP_PID}" 2>/dev/null || true
-
-    else
-        # =================================================================
-        # UPGRADE — Existing Data Detected
-        # =================================================================
-        # The database exists from a previous install, but /etc/app_configured
-        # was missing (meaning this is a new container image).
-        #
-        # In this state:
-        #   - The admin user already exists (skip creation)
-        #   - Database migrations may need to run (most apps handle this
-        #     automatically on startup)
-        #   - The platform callback is still sent (an update waits for it too)
-        #
-        # If your app needs explicit migration steps during upgrades,
-        # add them here. For example:
-        #
-        #   /app/bin/migrate --run-pending
-        #   sqlite3 /app/data/app.db "UPDATE settings SET value='new' WHERE key='schema_version'"
-        #
-        # Uptime Kuma handles migrations automatically on startup.
-
-        echo "Upgrade detected: existing data found at ${DATA_DB}"
-        echo "Skipping user creation."
+    if ensure_database && ensure_admin_user; then
+        gosu "${APP_USER}" touch "${SETUP_MARKER}"
     fi
 
+    # Stop the background app so it can be restarted with exec below.
+    kill "${APP_PID}" 2>/dev/null || true
+    wait "${APP_PID}" 2>/dev/null || true
+
+    if [[ ! -f "${SETUP_MARKER}" ]]; then
+        echo "ERROR: admin setup failed; the install is not reported as finished. It is retried on the next start."
+        exit 1
+    fi
+else
+    # UPGRADE or RESTART: the admin already exists. If your app needs explicit
+    # migration steps during upgrades, run them here, for example:
+    #
+    #   /app/bin/migrate --run-pending
+    #
+    # Uptime Kuma handles migrations automatically on startup.
+    echo "Existing setup found, skipping admin creation"
 fi
 
 # =============================================================================
