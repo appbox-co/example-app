@@ -118,10 +118,14 @@ setup_sqlite_database() {
 #
 # ALTERNATIVE APPROACHES FOR OTHER APPS:
 #
-#   1. Simple REST API (like Audiobookshelf):
-#      curl 'http://localhost:PORT/init' \
-#          -H 'Content-Type: application/json' \
-#          --data-raw '{"username":"'"${USERNAME}"'","password":"'"${PASSWORD}"'"}'
+#   1. Simple REST API (like Audiobookshelf). Build the body with jq from the
+#      environment: a hand-built '{"password":"'"${PASSWORD}"'"}' is invalid
+#      JSON once the password contains " or \, which complexPassword allows.
+#      Then confirm from the app's own state that the admin exists; do not
+#      treat an HTTP 400 as "already exists" (AGENTS.md rule 19).
+#      jq -n '{username: env.USERNAME, password: env.PASSWORD}' \
+#          | curl -s -o /dev/null -w '%{http_code}' 'http://localhost:PORT/init' \
+#              -H 'Content-Type: application/json' --data-binary @-
 #
 #   2. CLI command (some apps provide setup commands):
 #      /app/bin/setup --username "${USERNAME}" --password "${PASSWORD}"
@@ -129,11 +133,11 @@ setup_sqlite_database() {
 #   3. Direct database manipulation (last resort):
 #      sqlite3 /app/data/app.db "INSERT INTO users ..."
 #
-#   4. Configuration file generation:
-#      cat > /app/config.yml << CONF
-#      admin_user: ${USERNAME}
-#      admin_pass: ${PASSWORD}
-#      CONF
+#   4. Configuration file generation. Write values with an encoder for the
+#      file's format, never by pasting them into a heredoc: a quote, colon or
+#      backslash in the password breaks the file. For YAML (a JSON document
+#      is valid YAML):
+#      jq -n '{admin_user: env.USERNAME, admin_pass: env.PASSWORD}' > /app/config.yml
 create_admin_user() {
     local attempts=30
     local sleep_seconds=2
@@ -299,6 +303,12 @@ if [[ ! -f "${CONFIG_FLAG}" ]]; then
         wait_for_http "${LOCAL_URL}/api/entry-page" 90 2 || true
 
         # Stage 2: Create the admin user via Socket.IO
+        #
+        # NOTE: do not copy this failure handling. New apps must fail closed
+        # when admin setup fails (no setup marker, no installed callback,
+        # nothing serving, retry on the next start) and detect a finished
+        # setup from a marker written after success rather than from kuma.db.
+        # See AGENTS.md rule 19 and README "When admin setup fails".
         if ! create_admin_user; then
             echo "WARNING: Admin setup failed. Manual setup may be required."
         fi

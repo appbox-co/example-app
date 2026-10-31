@@ -287,8 +287,27 @@ custom_fields:
       showOnInstalled: false
 ```
 
-Sensitive fields are masked by default. Set `revealable: true` only for
-credentials the instance owner must recover, such as a generated client
+Sensitive fields are masked by default. Set `revealable: true` for
+credentials the instance owner must recover. That always includes the initial
+admin or login password, which also needs `params.showOnInstalled: true` so
+the owner can Show it on the installed app:
+
+```yaml
+custom_fields:
+  PASSWORD:
+    label: "Admin Password"
+    type: complexPassword
+    template_type: password
+    sensitive: true
+    revealable: true
+    validate:
+      - required
+      - complexPassword
+    params:
+      showOnInstalled: true
+```
+
+The same applies to a generated credential the owner needs, such as a client
 password:
 
 ```yaml
@@ -302,10 +321,12 @@ custom_fields:
     revealable: true
 ```
 
-For newly imported manifests, omit `revealable` or set it to `false` for
-write-only credentials, and set it to `true` for credentials the owner must
-recover. Legacy sensitive fields with no stored policy remain owner-revealable.
-Reveal access always requires authorization to the installed app instance.
+For newly imported manifests the importer stores an omitted `revealable` as
+`false`, so the field is write-only and Show answers 403 "Custom field is
+write-only". Omit it or set it to `false` only for credentials the owner should
+never read back. Legacy sensitive fields with no stored policy remain
+owner-revealable. Reveal access always requires authorization to the installed
+app instance.
 
 An installed `template_type: instance` field may reference another installation
 field by manifest key:
@@ -871,12 +892,23 @@ set -e
 # ... one-time setup (initdb, migrations, etc.) ...
 
 if [[ ! -f /etc/app_configured ]]; then
+    touch /etc/appbox_callback_pending   # before the configured marker
     touch /etc/app_configured
+fi
+
+if [[ -f /etc/appbox_callback_pending ]]; then
     (
         set +e   # prevent set -e from killing subshell on timeout
         wait_for_http "http://localhost:8080/api/health" 300 2
-        # ... admin creation ...
+        if [[ ! -f /config/.appbox_setup_done ]]; then
+            if ! ensure_admin_user; then   # see "When admin setup fails"
+                stop_web_service           # whole process group; see AGENTS.md
+                exit 1                     # no marker, no callback; the next start retries
+            fi
+            touch /config/.appbox_setup_done
+        fi
         /usr/local/bin/appbox-installed-callback   # see "API Callback"
+        rm -f /etc/appbox_callback_pending
     ) &
 fi
 
@@ -943,9 +975,26 @@ The entrypoint script detects three container states based on two signals:
 1. Mark the platform API callback as pending (`/etc/appbox_callback_pending`), then the container as configured (`/etc/app_configured`)
 2. App started in background
 3. Wait for app to be ready (poll HTTP)
-4. Create admin user via app's setup API
+4. Create admin user via app's setup API, with the request built by `jq` from the environment, and confirm from the app's own state that the admin now exists
 5. Stop the background app
 6. Start the callback in the background, then start app with `exec` as PID 1
+
+### When admin setup fails
+
+If the app cannot confirm an admin account, the install must not look
+finished:
+
+1. Do not write a persistent "setup done" marker or send the installed callback. Keep `/etc/appbox_callback_pending`.
+2. Do not leave the app serving an open setup or sign-up page. A single-process app exits non-zero. Containers run with `unless-stopped`, so Docker restarts it and setup runs again. An s6 app stops its web service's process group.
+3. On the next start, run setup again before sending the pending callback.
+
+Detect "already set up" from a marker written after confirmed setup, or from
+the app's own state. Do not detect it from the data directory existing, or from
+an HTTP status such as 400. See AGENTS.md rule 19 for the full list.
+
+The bundled Uptime Kuma `entrypoint.sh` predates this guidance: it still logs a
+warning and carries on when setup fails, and it detects upgrades from
+`kuma.db`. Do not copy that part.
 
 ### Upgrade
 

@@ -67,6 +67,21 @@ Replace `/app/data` with your app's actual data path (from `appbox.yml` `volumes
 - [ ] App starts as the main process without waiting for the callback
 - [ ] App is accessible at `http://localhost:<port>`
 - [ ] You can log in with the credentials provided during install
+- [ ] Repeat the fresh install with a password containing `"`, `\`, `'`, `$` and a space (all allowed by `complexPassword`); you can still log in
+- [ ] A persistent "setup done" marker is written only after the admin account is confirmed
+
+### Rejected admin setup
+
+Make setup fail on purpose, for example with an email or username the app
+rejects, and check that the install fails closed:
+
+- [ ] No "setup done" marker is written and no installed callback is sent
+- [ ] `/etc/appbox_callback_pending` is still present
+- [ ] The app does not serve an open setup or sign-up page (the port does not answer, or the container exits non-zero and Docker restarts it)
+- [ ] The app has no user accounts
+- [ ] After a restart, setup runs again
+- [ ] A container re-created on the same volumes with valid values finishes setup, and you can log in
+- [ ] The password does not appear in the log
 
 ---
 
@@ -224,8 +239,8 @@ docker exec my-app-test env | grep -E 'USERNAME|PASSWORD|INSTANCE_ID'
 
 - [ ] Every custom field defined in `appbox.yml` is available as an environment variable
 - [ ] Default values are applied when not overridden
-- [ ] Password fields work with complex passwords (upper, lower, number, special char)
-- [ ] The app does not crash or misbehave with special characters in field values
+- [ ] Password fields work with complex passwords (upper, lower, number, special char), including `"`, `\`, `'` and `$`
+- [ ] The app does not crash or misbehave with special characters in field values, and every request or config file carrying them is built with an encoder
 - [ ] Test with minimum valid input (only required fields)
 - [ ] Fields with `params.showOnInstalled: false` are absent from the installed app's Configuration card
 - [ ] Empty custom-field values do not leave blank rows in the installed app's Configuration card
@@ -471,6 +486,7 @@ Complete these tests when the manifest uses any feature documented in
       only by a user authorized for that installed instance
 - [ ] `revealable: true` without `sensitive: true` is rejected during import
 - [ ] Reveal values do not appear in logs, bulk responses, or error messages
+- [ ] The initial admin/login password sets `sensitive: true`, `revealable: true` and `params.showOnInstalled: true`; after install it starts masked, the owner's Show returns the value (no 403 "Custom field is write-only"), and Hide masks it again
 
 ---
 
