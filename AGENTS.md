@@ -91,6 +91,8 @@ credential; never expose it in ordinary responses, logs, or errors.
 
 17. **Operation readiness** — Platform/container readiness only permits typed-operation dispatch. Docker `HEALTHCHECK` is optional and does not prove operation readiness or success. Managers must use bounded, operation-specific readiness checks, verify authoritative postconditions, and return non-zero when success cannot be established. Treat `initial_rows_operation` as part of install completion and make it idempotent and convergent after partial work.
 
+18. **Version variants** — Mark an extra build of a release with a letters-only variant suffix, such as `3.3.5-ml`, and keep the standard build unsuffixed. Update keeps an instance on its variant. Put build revisions before the variant (`3.3.5-1-ml`, never `3.3.5-ml-1`), and never end a version with letters unless it is a variant (use `1.0.0-beta1`, not `1.0.0-beta`). See "Version strings and variants" in `README.md`.
+
 ## appbox.yml
 
 The `appbox.yml` file is the single source of truth for app configuration. See `README.md` for the full schema reference.

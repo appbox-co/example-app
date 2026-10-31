@@ -145,6 +145,11 @@ image:
   # version (REQUIRED)
   # The version string for this release, shown to users in the app store
   # and dashboard.
+  # For an extra build of the same release (e.g. one with machine learning),
+  # end the version with a letters-only variant suffix such as "3.3.5-ml".
+  # Update keeps an instance on its variant. Put a build revision before the
+  # suffix: "3.3.5-1-ml", not "3.3.5-ml-1". See "Version strings and
+  # variants" in README.md.
   version: "2"
 
   # tag

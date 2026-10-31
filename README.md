@@ -118,6 +118,18 @@ Defines the Docker image to pull.
 | `version` | string | Yes | — | Version string shown to users |
 | `tag` | string | No | Same as `version` | Docker tag to pull |
 
+#### Version strings and variants
+
+Some apps ship more than one build of the same release, for example a standard build and a larger build with machine learning. Give each extra build a variant suffix: a final `-` segment of two or more letters and nothing else, such as `3.3.5-ml`. Keep the standard build without a suffix and make it the default version.
+
+The Update button keeps an instance on its variant. An instance on `3.1.0-ml` is offered the newest `-ml` version, not the standard default. An instance on the standard build is offered the default. Users can still move between builds with Switch Version.
+
+- A build revision is a numeric segment, such as `1.70.02-2`. Numeric segments are never variants.
+- Put a build revision before the variant: `3.3.5-1-ml`, not `3.3.5-ml-1`. A version that ends in `-1` has no variant, so `3.3.5-ml-1` would be treated as a standard build.
+- Use the same suffix in every release of a variant: `3.3.5-ml`, then `3.4.0-ml`.
+- End a version with letters only when it is a variant. `1.0.0-beta` would start its own track that never updates to the stable default. Write pre-releases as `1.0.0-beta1` or `1.0.0-rc1`.
+- Release a variant build alongside its standard build, with the same resources and settings as the previous release of that variant.
+
 ### container — Runtime Configuration
 
 Docker container settings. All optional.
