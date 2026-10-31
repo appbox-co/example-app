@@ -790,16 +790,24 @@ custom_fields:
     # Default: {} (empty object)
     params: {}
 
+  # The owner signs in with this password, so keep it masked but let the
+  # owner reveal it on the installed app. Without revealable: true the
+  # importer stores the field as write-only and Show answers 403.
+  # complexPassword allows " \ ' and $: build any request or config file
+  # that carries it with an encoder (see AGENTS.md rule 19).
   PASSWORD:
     label: "Admin Password"
     type: complexPassword
     width: 6
     default_value: null
     template_type: password
+    sensitive: true
+    revealable: true
     validate:
       - required
       - complexPassword
-    params: {}
+    params:
+      showOnInstalled: true
 
   # externalURL field with a template variable — the platform resolves
   # %DOMAIN.DOMAIN% at install time, so no callback payload is needed.

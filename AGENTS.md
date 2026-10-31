@@ -25,12 +25,13 @@ example-app/
 ├── Dockerfile       # Container image definition
 ├── entrypoint.sh    # Lifecycle script (setup, upgrade, callback)
 ├── appbox-installed-callback  # Sends the installed callback (copy as-is)
+├── appbox-kuma-admin  # Uptime Kuma only: asks whether an admin exists, creates it
 ├── icon.png         # App icon (512x512 PNG) for the store listing
 ├── moduser.sh       # Password change script (required for all apps)
 ├── README.md        # Full documentation and schema reference
 ├── TESTING.md       # Testing framework — complete before submitting
 └── tests/
-    └── test-installed-callback.sh  # Callback helper and entrypoint tests
+    └── test-installed-callback.sh  # Callback helper, entrypoint and admin setup tests
 ```
 
 ## Key Constraints
@@ -47,8 +48,8 @@ When creating or modifying an Appbox app, always follow these rules:
 
 5. **Entrypoint lifecycle** — The entrypoint script must follow this pattern:
    - Check `/etc/app_configured` to detect first boot vs restart
-   - Fresh install: start app, configure admin user, stop app
-   - Upgrade: skip user creation (data exists), run migrations if needed
+   - Fresh install: start app, configure admin user, stop app. If the admin account cannot be confirmed, fail closed (see rule 19)
+   - Upgrade: skip user creation (setup already confirmed), run migrations if needed
    - Mark the platform callback (`POST https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}`) as pending, then send it **in the background** with `appbox-installed-callback`. Never make `exec`, cont-init or an s6 oneshot wait for it. See [Platform Callback](#platform-callback).
    - Start app with `exec gosu 1000:1000 "$@"`
 
@@ -85,13 +86,46 @@ must enforce the conditions at execution time; frontend hiding is never an
 authorization boundary. See `CUSTOM_TABLES.md`.
 
 16. **Sensitive field reveal policy** — Declare `sensitive: true` for every
-stored credential. Such fields are write-only by default. Add
-`revealable: true` only when an authorized instance owner must recover the
-credential; never expose it in ordinary responses, logs, or errors.
+stored credential. Such fields are write-only by default: the importer stores
+an omitted `revealable` as `false`. The initial admin or login password the
+owner signs in with must set `sensitive: true`, `revealable: true` and
+`params.showOnInstalled: true`, so the owner can Show it on the installed app.
+Add `revealable: true` to other credentials only when an authorized instance
+owner must recover them; never expose any of them in ordinary responses, logs,
+or errors.
 
 17. **Operation readiness** — Platform/container readiness only permits typed-operation dispatch. Docker `HEALTHCHECK` is optional and does not prove operation readiness or success. Managers must use bounded, operation-specific readiness checks, verify authoritative postconditions, and return non-zero when success cannot be established. Treat `initial_rows_operation` as part of install completion and make it idempotent and convergent after partial work.
 
 18. **Version variants** — Mark an extra build of a release with a letters-only variant suffix, such as `3.3.5-ml`, and keep the standard build unsuffixed. Update keeps an instance on its variant. Put build revisions before the variant (`3.3.5-1-ml`, never `3.3.5-ml-1`), and never end a version with letters unless it is a variant (use `1.0.0-beta1`, not `1.0.0-beta`). See "Version strings and variants" in `README.md`.
+
+19. **Initial admin setup** — Create the admin account from the install fields
+and report the install finished only once the app confirms the account exists.
+   - Build request bodies and config files with an encoder, never by shell
+     string interpolation: `jq -n '{email: env.EMAIL, password: env.PASSWORD}' | curl --data-binary @-`.
+     `complexPassword` allows `"`, `\`, `'` and `$`, and a hand-built body
+     breaks on them. Reading the values from the environment also keeps them
+     off command lines.
+   - Decide that an admin already exists from the app's own state (for
+     example Immich's `GET /api/server/config` `isInitialized`), checked
+     before and after the request. Never infer it from an HTTP status such as
+     400, which also means "invalid request".
+   - Fail closed when setup cannot be confirmed. Do not write the persistent
+     setup marker, do not send the installed callback, and do not leave the
+     app serving an open setup or sign-up page. Keep the pending flag so the
+     next start retries. A single-process app can exit non-zero; containers run
+     with `unless-stopped`, so Docker restarts it and setup runs again. Under
+     s6, stop the web service's whole process group: `s6-svc -d` signals only
+     the service's main process, and a child worker can keep the port open.
+   - Mark setup as done with a persistent marker written only after success,
+     not with "the data directory exists". Otherwise a failed first attempt
+     looks like an upgrade on the next start and setup never runs again.
+   - A restart part-way through first boot must finish setup before it sends
+     the pending callback.
+   - Never log the password, request bodies or the app's error bodies, which
+     can echo submitted values.
+
+   The bundled `entrypoint.sh` (single-process, with `appbox-kuma-admin`) and
+   CyloTech/immich `entrypoint.sh` (s6) are tested examples.
 
 ## appbox.yml
 
@@ -178,8 +212,9 @@ set -e
 APP_USER="1000:1000"
 LOCAL_URL="http://localhost:<port>"
 CALLBACK_PENDING_FLAG="/etc/appbox_callback_pending"
+SETUP_MARKER="<volume>/.appbox_setup_done"   # persistent; written only after confirmed setup
 
-# ... wait_for_http ...
+# ... wait_for_http, ensure_admin_user (see rule 19) ...
 
 send_pending_callback() {
     set +e   # runs in the background; never let a timeout kill it
@@ -191,15 +226,23 @@ send_pending_callback() {
 if [[ ! -f /etc/app_configured ]]; then
     touch "${CALLBACK_PENDING_FLAG}"   # first, and do NOT call the API here
     touch /etc/app_configured
+fi
 
-    if [[ ! -f "<persisted-data-path>" ]]; then
-        # FRESH INSTALL: start app, configure, stop
-        gosu "${APP_USER}" "$@" &
-        # ... wait for ready, create admin user, kill app
-    else
-        # UPGRADE: skip user creation
+if [[ -f "${CALLBACK_PENDING_FLAG}" && ! -f "${SETUP_MARKER}" ]]; then
+    # FRESH INSTALL, or an earlier attempt did not finish: start app, set up, stop
+    gosu "${APP_USER}" "$@" &
+    app_pid=$!
+    # ... wait for ready ...
+    ensure_admin_user && touch "${SETUP_MARKER}"
+    kill "${app_pid}"; wait "${app_pid}" || true
+    if [[ ! -f "${SETUP_MARKER}" ]]; then
+        # Fail closed: no callback, nothing serving; Docker restarts the
+        # container (unless-stopped) and the next start retries.
+        echo "ERROR: admin setup failed; the install is not reported as finished"
+        exit 1
     fi
 fi
+# UPGRADE (marker present): skip user creation; run migrations if needed
 
 if [[ -f "${CALLBACK_PENDING_FLAG}" ]]; then
     send_pending_callback &   # background: the app starts whatever the API says
@@ -241,9 +284,17 @@ if [[ -f "${CALLBACK_PENDING_FLAG}" ]]; then
         set +e   # CRITICAL: prevent set -e from killing the subshell on timeout
 
         if [[ ! -f "${FRESH_MARKER}" ]]; then
+            # Also runs after a restart part-way through first boot.
             echo "Fresh install, waiting for app..."
             wait_for_http "${LOCAL_URL}/api/health" 300 2
-            create_admin_user && touch "${FRESH_MARKER}"
+            if ! ensure_admin_user; then   # see rule 19
+                # Fail closed: no marker, no callback, pending flag kept, and
+                # the web service's process group stopped until the next start.
+                echo "ERROR: admin setup failed; the install is not reported as finished"
+                stop_web_service
+                exit 1
+            fi
+            touch "${FRESH_MARKER}"
         else
             echo "Upgrade detected"
             wait_for_http "${LOCAL_URL}/api/health" 300 2
@@ -262,6 +313,7 @@ exec "$@"
 - `set -e` is preferred. Do not enable unconditional `set -x`; expanded commands can expose passwords and tokens in logs.
 - The lifecycle subshell uses `set +e` to prevent inherited `set -e` from killing it when `wait_for_http` times out.
 - Use a generous timeout (300 × 2s = 10 min) for `wait_for_http` since s6 init scripts may take time before services start.
+- `stop_web_service` must close the port. Read the service's pid with `/command/s6-svstat -o pid /run/service/<svc>`, run `/command/s6-svc -d`, then `kill -TERM -- -<pid>` for its process group. Escalate to `SIGKILL` if the port still answers, and finish with `/command/s6-svwait -D`. Immich's `immich-api` worker kept serving after a plain `s6-svc -d`. CyloTech/immich `entrypoint.sh` (`stop_immich_server`) is a tested example.
 - `exec "$@"` becomes `exec /init` (from CMD), NOT `exec gosu ... "$@"`. s6-overlay's service `run` scripts handle user switching via `gosu` or `s6-setuidgid`.
 
 ### Setup in cont-init or an s6 oneshot (LSIO images)
@@ -451,6 +503,10 @@ When the app uses an embedded database (PostgreSQL, MySQL, SQLite) and has no CL
 - Running the app as PID 1 without `exec` — signals not forwarded, graceful shutdown fails
 - Including platform-managed fields in appbox.yml — they are ignored
 - Not testing the upgrade path — user data gets wiped or admin user re-created
+- **Building the admin request by string interpolation** — `--data '{"password":"'"${PASSWORD}"'"}'` produces invalid JSON as soon as the password contains `"` or `\`, both allowed by `complexPassword`. Build it with `jq` from the environment (rule 19)
+- **Treating an HTTP 400 as "admin already exists"** — a 400 also means the request was rejected. Ask the app whether an admin exists instead. Immich 3.3.5 and earlier reported installs as finished with no admin account and an open sign-up page
+- **Warning and carrying on when admin setup fails** — the install is reported finished with no working login. Fail closed and retry on the next start (rule 19)
+- **Leaving the admin password write-only** — `sensitive: true` without `revealable: true` and `params.showOnInstalled: true` imports as write-only, and Show on the installed app answers 403 "Custom field is write-only"
 - Missing moduser.sh — required for password recovery; submission will be rejected without it
 - Defining HTTP ports in the `ports` section for web apps — exposes the port publicly bypassing nginx/SSL. Use `VIRTUAL_PORT` env var instead
 - Forgetting `VIRTUAL_PORT` when the app doesn't listen on port 80 — nginx proxies to port 80 by default and the app won't load

@@ -6,7 +6,12 @@
 #     X-Cylo-Callback-Token, passes an optional JSON body, and never logs the
 #     callback token carried in INSTANCE_ID;
 #   - entrypoint.sh execs the app straight away even when the API rejects the
-#     callback, sends a pending callback once, and clears the pending flag.
+#     callback, sends a pending callback once, and clears the pending flag;
+#   - its admin setup (run against a stub appbox-kuma-admin) creates the admin
+#     on a fresh install, only marks an existing admin on the first update,
+#     retries after a restart part-way through, and fails closed when Uptime
+#     Kuma rejects the account or never answers: exit 1, no setup marker, no
+#     callback, pending flag kept.
 #
 # Usage: tests/test-installed-callback.sh
 set -u
@@ -23,8 +28,11 @@ import http.server, json, os, sys
 port, codes, log = int(sys.argv[1]), [int(c) for c in sys.argv[2].split(",")], sys.argv[3]
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        body = json.dumps({"type": "entryPage"}).encode()
         self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        self.wfile.write(body)
     def do_POST(self):
         seen = sum(1 for _ in open(log)) if os.path.exists(log) else 0
         code = codes[min(seen, len(codes) - 1)]
@@ -177,79 +185,134 @@ stop_mock
 entrypoint="${repo_root}/entrypoint.sh"
 # --- entrypoint ----------------------------------------------------------------
 
+# Stand-in for appbox-kuma-admin. KUMA_STUB picks Uptime Kuma's state:
+#   admin       a user exists (needSetup false)
+#   fresh       no user; setup succeeds and needSetup turns false
+#   rejected    no user; setup is refused
+#   down        Uptime Kuma never answers
+# Each call is logged to $KUMA_STUB_LOG.
+kuma_stub='#!/bin/bash
+echo "$1" >>"${KUMA_STUB_LOG}"
+state="${KUMA_STUB_LOG}.created"
+case "${KUMA_STUB}:$1" in
+    admin:need-setup) echo false ;;
+    fresh:need-setup) [[ -f "${state}" ]] && echo false || echo true ;;
+    fresh:setup) touch "${state}"; echo ok ;;
+    rejected:need-setup) echo true ;;
+    rejected:setup) echo rejected ;;
+    *) exit 1 ;;
+esac'
+
 # Run a copy of entrypoint.sh with its paths pointed into a scratch directory,
-# gosu removed and a fake app as CMD that records when it started.
-#   state: upgrade (no CONFIG_FLAG, data present), restart-pending (CONFIG_FLAG
-#   and pending flag present) or restart (CONFIG_FLAG only).
+# gosu removed, short sleeps, the stub above as appbox-kuma-admin and a fake
+# app as CMD that records when it first started.
+#   entrypoint_case <state> <stub> <codes> <want_exit> <want_requests> <want_setups>
+#   state: fresh (nothing), upgrade (data only, no setup marker), updated
+#   (setup marker only), restart-pending (CONFIG_FLAG, pending flag and setup
+#   marker), restart-setup (CONFIG_FLAG and pending flag, no marker) or
+#   restart (CONFIG_FLAG and setup marker).
 entrypoint_case() {
-    local state=$1 codes=$2 want_requests=$3
+    local state=$1 stub=$2 codes=$3 want_exit=$4 want_requests=$5 want_setups=$6
     start_mock "${codes}"
     local sandbox="${work}/entrypoint.sh"
+    printf '%s\n' "${kuma_stub}" >"${work}/kuma-admin"
+    chmod +x "${work}/kuma-admin"
     sed -e "s|^CONFIG_FLAG=.*|CONFIG_FLAG=\"${work}/app_configured\"|" \
-        -e "s|^DATA_DB=.*|DATA_DB=\"${work}/kuma.db\"|" \
+        -e "s|^SETUP_MARKER=.*|SETUP_MARKER=\"${work}/setup_done\"|" \
         -e "s|^LOCAL_URL=.*|LOCAL_URL=\"http://127.0.0.1:${port}\"|" \
         -e "s|^CALLBACK_PENDING_FLAG=.*|CALLBACK_PENDING_FLAG=\"${work}/callback_pending\"|" \
         -e "s|^CALLBACK_HELPER=.*|CALLBACK_HELPER=\"${helper}\"|" \
+        -e "s|^KUMA_ADMIN=.*|KUMA_ADMIN=\"${work}/kuma-admin\"|" \
+        -e 's|^\([[:space:]]*\)gosu "${APP_USER}" "$@" &$|\1"$@" \&|' \
+        -e 's|gosu "${APP_USER}" touch|touch|' \
+        -e 's|^\([[:space:]]*\)sleep 2$|\1sleep 0.05|' \
         -e 's|^exec gosu "${APP_USER}" "$@"$|exec "$@"|' \
         "${entrypoint}" >"${sandbox}"
     chmod +x "${sandbox}"
-    if ! grep -q '^exec "\$@"$' "${sandbox}"; then
-        fail "entrypoint ${state}: could not sandbox the final exec"
+    if ! grep -q '^exec "\$@"$' "${sandbox}" || grep -v '^[[:space:]]*#' "${sandbox}" | grep -q 'gosu'; then
+        fail "entrypoint ${state}: could not sandbox gosu and the final exec"
         stop_mock
         return
     fi
 
-    touch "${work}/kuma.db"
     case "${state}" in
-        restart-pending) touch "${work}/app_configured" "${work}/callback_pending" ;;
-        restart) touch "${work}/app_configured" ;;
+        upgrade) touch "${work}/kuma.db" ;;
+        updated) touch "${work}/setup_done" ;;
+        restart-pending) touch "${work}/app_configured" "${work}/callback_pending" "${work}/setup_done" ;;
+        restart-setup) touch "${work}/app_configured" "${work}/callback_pending" ;;
+        restart) touch "${work}/app_configured" "${work}/setup_done" ;;
     esac
 
-    local started_at app_at entrypoint_pid waited=0
+    local started_at app_at entrypoint_pid rc waited=0
     started_at=$(date +%s)
     env INSTANCE_ID="${token_id}" CALLBACK_TOKEN="${header_token}" \
         APPBOX_CALLBACK_BASE="http://127.0.0.1:${port}" \
         APPBOX_CALLBACK_RETRY_DELAY=1 \
-        "${sandbox}" bash -c "date +%s >'${work}/app_started'; sleep 1" \
+        KUMA_STUB="${stub}" KUMA_STUB_LOG="${work}/kuma-calls" \
+        "${sandbox}" bash -c "[[ -f '${work}/app_started' ]] || date +%s >'${work}/app_started'; sleep 1" \
         >"${work}/output" 2>&1 &
     entrypoint_pid=$!
 
-    # A callback that blocks startup would never reach the app; give up after
-    # 10s instead of hanging.
-    while [[ ! -f "${work}/app_started" && "${waited}" -lt 10 ]]; do
+    # A callback or setup that blocks would never finish; give up after 15s
+    # instead of hanging.
+    while kill -0 "${entrypoint_pid}" 2>/dev/null && [[ "${waited}" -lt 15 ]]; do
         sleep 1
         waited=$((waited + 1))
     done
-    if [[ ! -f "${work}/app_started" ]]; then
+    if kill -0 "${entrypoint_pid}" 2>/dev/null; then
         pkill -P "${entrypoint_pid}" 2>/dev/null
         kill "${entrypoint_pid}" 2>/dev/null
     fi
-    wait "${entrypoint_pid}" 2>/dev/null
+    wait "${entrypoint_pid}"
+    rc=$?
 
     # The background sender outlives the fake app; wait for it to finish.
     waited=0
-    while [[ -f "${work}/callback_pending" && "${waited}" -lt 20 ]]; do
+    while [[ "${want_exit}" == 0 && -f "${work}/callback_pending" && "${waited}" -lt 20 ]]; do
         sleep 1
         waited=$((waited + 1))
     done
     sleep 0.5
 
     app_at=$(cat "${work}/app_started" 2>/dev/null || echo 0)
-    local requests leaked
+    local requests leaked setups marker pending
     requests=$(request_count)
     leaked=$(token_logged)
-    if [[ "${app_at}" -gt 0 && $((app_at - started_at)) -le 2 && ! -f "${work}/callback_pending" \
-        && -f "${work}/app_configured" && "${requests}" == "${want_requests}" && "${leaked}" == 0 ]]; then
-        pass "entrypoint ${state} codes=${codes}: app started after $((app_at - started_at))s, requests=${requests}"
+    setups=$(grep -cx setup "${work}/kuma-calls" 2>/dev/null)
+    marker=$([[ -f "${work}/setup_done" ]] && echo yes || echo no)
+    pending=$([[ -f "${work}/callback_pending" ]] && echo yes || echo no)
+    local want_marker=yes want_pending=no
+    if [[ "${want_exit}" != 0 ]]; then
+        want_marker=no want_pending=yes
+    fi
+    if [[ "${rc}" == "${want_exit}" && "${app_at}" -gt 0 && $((app_at - started_at)) -le 2 \
+        && -f "${work}/app_configured" && "${requests}" == "${want_requests}" \
+        && "${setups:-0}" == "${want_setups}" && "${marker}" == "${want_marker}" \
+        && "${pending}" == "${want_pending}" && "${leaked}" == 0 ]]; then
+        pass "entrypoint ${state} stub=${stub} codes=${codes}: exit=${rc} marker=${marker} pending=${pending} requests=${requests} setups=${setups:-0}"
     else
-        fail "entrypoint ${state} codes=${codes}: app_started=${app_at} start=${started_at} pending=$([[ -f "${work}/callback_pending" ]] && echo yes || echo no) requests=${requests}/${want_requests} token_logged=${leaked}"
+        fail "entrypoint ${state} stub=${stub} codes=${codes}: exit=${rc}/${want_exit} app_started=${app_at} start=${started_at} marker=${marker}/${want_marker} pending=${pending}/${want_pending} requests=${requests}/${want_requests} setups=${setups:-0}/${want_setups} token_logged=${leaked}"
+    fi
+    if [[ "${want_exit}" != 0 ]] && ! grep -q '^ERROR: admin setup failed' "${work}/output"; then
+        fail "entrypoint ${state} stub=${stub}: no admin setup failure in the log"
     fi
     stop_mock
 }
 
-entrypoint_case upgrade 200 1
-entrypoint_case upgrade 401 1
-entrypoint_case restart-pending 503,200 2
-entrypoint_case restart 200 0
+entrypoint_case fresh fresh 200 0 1 1
+entrypoint_case fresh rejected 200 1 0 1
+entrypoint_case fresh down 200 1 0 0
+entrypoint_case upgrade admin 200 0 1 0
+entrypoint_case upgrade admin 401 0 1 0
+entrypoint_case updated down 200 0 1 0
+entrypoint_case restart-pending down 503,200 0 2 0
+entrypoint_case restart-setup fresh 200 0 1 1
+entrypoint_case restart down 200 0 0 0
+
+if grep -qE '^[[:space:]]*set -x' "${entrypoint}"; then
+    fail "entrypoint.sh traces commands with set -x"
+else
+    pass "entrypoint.sh does not trace commands"
+fi
 
 exit "${failures}"
